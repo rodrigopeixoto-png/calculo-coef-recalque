@@ -4,25 +4,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # -----------------------------------------------------------------------------
-# DICIONÁRIO GEOTÉCNICO DE SOLOS (EXPANDIDO)
+# DICIONÁRIO GEOTÉCNICO DE SOLOS
 # -----------------------------------------------------------------------------
+# Como o k_h agora depende diretamente do k_v e do Poisson, 
+# removemos o fator antigo do dicionário para deixar o código mais limpo.
 PARAMETROS_SOLO = {
-    "Argila":           {"alpha": 1500, "comportamento": "coesivo",       "kh_fator": 670},
-    "Argila siltosa":   {"alpha": 1750, "comportamento": "coesivo",       "kh_fator": 670},
-    "Argila arenosa":   {"alpha": 2000, "comportamento": "coesivo",       "kh_fator": 500},
-    "Silte":            {"alpha": 2000, "comportamento": "intermediario", "kh_fator": 500},
-    "Silte argiloso":   {"alpha": 2000, "comportamento": "coesivo",       "kh_fator": 670},
-    "Silte arenoso":    {"alpha": 2500, "comportamento": "granular",      "kh_fator": 300},
-    "Areia argilosa":   {"alpha": 2500, "comportamento": "granular",      "kh_fator": 300},
-    "Areia siltosa":    {"alpha": 2800, "comportamento": "granular",      "kh_fator": 300},
-    "Areia":            {"alpha": 3000, "comportamento": "granular",      "kh_fator": 300}
+    "Argila":           {"alpha": 1500, "comportamento": "coesivo"},
+    "Argila siltosa":   {"alpha": 1750, "comportamento": "coesivo"},
+    "Argila arenosa":   {"alpha": 2000, "comportamento": "coesivo"},
+    "Silte":            {"alpha": 2000, "comportamento": "intermediario"},
+    "Silte argiloso":   {"alpha": 2000, "comportamento": "coesivo"},
+    "Silte arenoso":    {"alpha": 2500, "comportamento": "granular"},
+    "Areia argilosa":   {"alpha": 2500, "comportamento": "granular"},
+    "Areia siltosa":    {"alpha": 2800, "comportamento": "granular"},
+    "Areia":            {"alpha": 3000, "comportamento": "granular"}
 }
 
 OPCOES_SOLO = list(PARAMETROS_SOLO.keys())
 
 # Configuração da página
 st.set_page_config(page_title="Calculadora Geotécnica", page_icon="🏗️", layout="wide")
-st.title("🏗️ Coeficientes de Recalque ($k_v$ e $k_h$) - Perfil Estendido")
+st.title("🏗️ Coeficientes de Recalque (k_v e k_h) - Perfil Estendido")
 
 # Sidebar
 st.sidebar.header("📋 Parâmetros da Fundação")
@@ -78,18 +80,7 @@ def calc_es(row):
 
 df_spt["Es (kPa)"] = df_spt.apply(calc_es, axis=1)
 
-def calc_kh(row):
-    z = row["Profundidade (m)"]
-    n = row["N_corr"]
-    solo_info = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Silte"])
-    
-    if solo_info["comportamento"] == "granular":
-        return (solo_info["kh_fator"] * n * z) / B
-    else:
-        return (solo_info["kh_fator"] * n) / B
-
-df_spt["k_h Camada (kN/m³)"] = df_spt.apply(calc_kh, axis=1)
-
+# 1. Primeiro: Cálculo do k_v (Vertical)
 def calc_kv(row):
     n = row["N_corr"]
     k1 = 1200 * n
@@ -102,6 +93,9 @@ def calc_kv(row):
 
 df_spt["k_v Camada (kN/m³)"] = df_spt.apply(calc_kv, axis=1)
 
+# 2. Segundo: Cálculo do k_h multiplicando o k_v pelo Coeficiente de Poisson (nu)
+df_spt["k_h Camada (kN/m³)"] = df_spt["k_v Camada (kN/m³)"] * nu
+
 # -----------------------------------------------------------------------------
 # FILTROS DE ZONA DE INFLUÊNCIA
 # -----------------------------------------------------------------------------
@@ -111,7 +105,7 @@ if tipo_fundacao == "Rasa (Sapata/Radier)":
     if df_inf.empty: df_inf = df_spt.head(1)
     nspt_medio = df_inf["N_corr"].mean()
     kv_global = df_inf["k_v Camada (kN/m³)"].mean()
-    kh_global = kv_global * 0.8
+    kh_global = kv_global * nu
 else:
     cota_fim = cota_assentamento + comprimento_estaca
     df_inf = df_spt[(df_spt["Profundidade (m)"] >= cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)]
@@ -173,8 +167,8 @@ st.dataframe(
 st.markdown("---")
 st.subheader("📈 Perfil Geotécnico")
 fig, ax = plt.subplots(figsize=(10, 3.5))
-ax.plot(df_spt["k_h Camada (kN/m³)"], df_spt["Profundidade (m)"], label="$k_h$ Horizontal", marker="o", color="#1f77b4")
-ax.plot(df_spt["k_v Camada (kN/m³)"], df_spt["Profundidade (m)"], label="$k_v$ Vertical", marker="s", color="#ff7f0e")
+ax.plot(df_spt["k_h Camada (kN/m³)"], df_spt["Profundidade (m)"], label="k_h Horizontal", marker="o", color="#1f77b4")
+ax.plot(df_spt["k_v Camada (kN/m³)"], df_spt["Profundidade (m)"], label="k_v Vertical", marker="s", color="#ff7f0e")
 ax.axhspan(cota_assentamento, cota_fim, color='yellow', alpha=0.2, label="Trecho de Influência da Fundação")
 ax.invert_yaxis()
 ax.set_xlabel("Módulo de Recalque (kN/m³)")
