@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 # -----------------------------------------------------------------------------
 # DICIONÁRIO GEOTÉCNICO DE SOLOS
 # -----------------------------------------------------------------------------
-# Como o k_h agora depende diretamente do k_v e do Poisson, 
-# removemos o fator antigo do dicionário para deixar o código mais limpo.
 PARAMETROS_SOLO = {
     "Argila":           {"alpha": 1500, "comportamento": "coesivo"},
     "Argila siltosa":   {"alpha": 1750, "comportamento": "coesivo"},
@@ -24,22 +22,37 @@ OPCOES_SOLO = list(PARAMETROS_SOLO.keys())
 
 # Configuração da página
 st.set_page_config(page_title="Calculadora Geotécnica", page_icon="🏗️", layout="wide")
-st.title("🏗️ Coeficientes de Recalque (k_v e k_h) - Perfil Estendido")
+st.title("🏗️ Coeficientes de Recalque (k_v e k_h)")
+st.caption("Com refinamento de Meyerhof para Módulo de Elasticidade em Fundações Profundas")
 
-# Sidebar
+# -----------------------------------------------------------------------------
+# SIDEBAR - PARÂMETROS DA FUNDAÇÃO
+# -----------------------------------------------------------------------------
 st.sidebar.header("📋 Parâmetros da Fundação")
 tipo_fundacao = st.sidebar.selectbox("Tipo de Fundação", ["Rasa (Sapata/Radier)", "Profunda (Estaca)"])
+
+# Escolha do método construtivo (Aparece apenas se for Estaca)
+if tipo_fundacao == "Profunda (Estaca)":
+    metodo_construtivo = st.sidebar.radio(
+        "Método Construtivo (Influencia rigidez de ponta):", 
+        ["Escavada (Hélice, Trado, Tubulão)", "Cravada (Pré-moldada, Metálica)"]
+    )
+else:
+    metodo_construtivo = None
+
 secao = st.sidebar.selectbox("Geometria da Seção", ["Quadrada", "Circular", "Retangular"])
 
 col_b, col_l = st.sidebar.columns(2)
 B = col_b.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.8, step=0.05)
 L = col_l.number_input("Comprimento L (m)", min_value=0.1, value=0.8, step=0.05) if secao == "Retangular" else B
 
-cota_assentamento = st.sidebar.number_input("Cota de Assentamento (m)", min_value=0.0, value=1.5, step=0.5)
+cota_assentamento = st.sidebar.number_input("Cota de Assentamento/Arrasamento (m)", min_value=0.0, value=1.5, step=0.5)
 comprimento_estaca = st.sidebar.number_input("Comprimento da Estaca (m)", min_value=1.0, value=10.0, step=0.5) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 nu = st.sidebar.slider("Coeficiente de Poisson (ν)", min_value=0.1, max_value=0.5, value=0.35, step=0.01)
 
-# Tabela SPT
+# -----------------------------------------------------------------------------
+# TABELA DE SONDAGEM SPT
+# -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1, 1])
 
 with col_esq:
@@ -70,7 +83,7 @@ with col_esq:
     )
 
 # -----------------------------------------------------------------------------
-# CÁLCULOS DINÂMICOS
+# CÁLCULOS DINÂMICOS (POR CAMADA)
 # -----------------------------------------------------------------------------
 df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 
@@ -80,7 +93,6 @@ def calc_es(row):
 
 df_spt["Es (kPa)"] = df_spt.apply(calc_es, axis=1)
 
-# 1. Primeiro: Cálculo do k_v (Vertical)
 def calc_kv(row):
     n = row["N_corr"]
     k1 = 1200 * n
@@ -92,12 +104,10 @@ def calc_kv(row):
         return k1 * ((B + 0.3) / (2 * B)) ** 2
 
 df_spt["k_v Camada (kN/m³)"] = df_spt.apply(calc_kv, axis=1)
-
-# 2. Segundo: Cálculo do k_h multiplicando o k_v pelo Coeficiente de Poisson (nu)
 df_spt["k_h Camada (kN/m³)"] = df_spt["k_v Camada (kN/m³)"] * nu
 
 # -----------------------------------------------------------------------------
-# FILTROS DE ZONA DE INFLUÊNCIA
+# FILTROS E LÓGICA DE APLICAÇÃO (ZONA DE INFLUÊNCIA / MEYERHOF)
 # -----------------------------------------------------------------------------
 if tipo_fundacao == "Rasa (Sapata/Radier)":
     cota_fim = cota_assentamento + (1.5 * B)
@@ -106,13 +116,26 @@ if tipo_fundacao == "Rasa (Sapata/Radier)":
     nspt_medio = df_inf["N_corr"].mean()
     kv_global = df_inf["k_v Camada (kN/m³)"].mean()
     kh_global = kv_global * nu
+    
 else:
     cota_fim = cota_assentamento + comprimento_estaca
     df_inf = df_spt[(df_spt["Profundidade (m)"] >= cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)]
     if df_inf.empty: df_inf = df_spt.head(1)
+    
     nspt_medio = df_inf["N_corr"].mean()
     kh_global = df_inf["k_h Camada (kN/m³)"].mean()
-    es_ponta = df_inf.iloc[-1]["Es (kPa)"]
+    
+    # Aplicação do Refinamento de Meyerhof para o E_s de Ponta
+    n_ponta = df_inf.iloc[-1]["N_corr"]
+    
+    if "Escavada" in metodo_construtivo:
+        # Menor rigidez devido ao alívio de tensões na escavação (aprox. 1000 * N)
+        es_ponta = 1000 * n_ponta  
+    else:
+        # Maior rigidez devido à compactação lateral na cravação (aprox. 3000 * N)
+        es_ponta = 3000 * n_ponta  
+        
+    # Cálculo elástico da mola vertical na ponta da estaca (Vesić)
     kv_global = es_ponta / (B * (1 - nu**2) * 0.85)
 
 # -----------------------------------------------------------------------------
@@ -126,8 +149,8 @@ with col_dir:
 
     st.markdown("---")
     m1, m2 = st.columns(2)
-    m1.metric("k_v Global", f"{kv_global:,.2f} kN/m³")
-    m2.metric("k_h Global", f"{kh_global:,.2f} kN/m³")
+    m1.metric("k_v Global (Base/Ponta)", f"{kv_global:,.2f} kN/m³")
+    m2.metric("k_h Global (Lateral)", f"{kh_global:,.2f} kN/m³")
 
     st.markdown("---")
     st.write("### 🔄 Conversão para Eberick (Valores Globais)")
