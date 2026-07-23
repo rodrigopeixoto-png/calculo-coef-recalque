@@ -4,9 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # -----------------------------------------------------------------------------
-# DICIONÁRIO GEOTÉCNICO DE SOLOS (Parâmetros exatos Aoki-Velloso)
-# K convertido para kPa (MPa * 1000), alpha mantido em decimal (% / 100)
-# alpha_k (Winkler) estimado com base no tipo de material para compatibilidade
+# DICIONÁRIO GEOTÉCNICO DE SOLOS (Parâmetros exatos Aoki-Velloso e Molas)
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
     "Areia":                 {"aoki_K": 1000, "aoki_alpha": 0.014, "alpha_k": 3000, "comportamento": "granular"},
@@ -27,7 +25,6 @@ PARAMETROS_SOLO = {
 
 OPCOES_SOLO = list(PARAMETROS_SOLO.keys())
 
-# Fatores Construtivos Revisados (Aoki-Velloso F1 e F2)
 FATORES_CONSTRUTIVOS = {
     "Franki": {"F1": 2.5, "F2": 5.0},
     "Metálica": {"F1": 1.8, "F2": 4.0},
@@ -70,7 +67,7 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT (Com valores padrão baseados no modelo fornecido)
+# TABELA DE SONDAGEM SPT
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
@@ -78,7 +75,6 @@ with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
     profundidades = list(range(1, 16))
     
-    # Valores do N_SPT conforme imagem anexada
     spt_padrao = [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24]
     solos_modelo = ["Argila"] * 15
 
@@ -108,7 +104,7 @@ df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
 Inercia_c = (np.pi * B**4) / 64 if secao == "Circular" else (B**4) / 12
 Perimetro = np.pi * B if secao == "Circular" else 4 * B
-E_c = 5600 * np.sqrt(fck) * 1000 # E_ci em kPa
+E_c = 5600 * np.sqrt(fck) * 1000 
 
 f1 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"]
 f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
@@ -117,22 +113,19 @@ def processar_solo(row):
     solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
     n = row["N_corr"]
     
-    # Molas (Winkler/Terzaghi)
     es = solo["alpha_k"] * n
     k1 = 1200 * n
     kv = k1 * (0.3 / B) if solo["comportamento"] == "coesivo" else k1 * ((B + 0.3) / (2 * B)) ** 2
     kh = kv * nu
     
-    # Resistência Local Aoki-Velloso
     rl = (solo["aoki_alpha"] * solo["aoki_K"] * n) / f2
     rp = (solo["aoki_K"] * row["N_Aoki"]) / f1 * Area_c
-    delta_rl = rl * Perimetro * 1.0 # Assumindo camadas de 1 metro
+    delta_rl = rl * Perimetro * 1.0 
     
     return pd.Series([es, kv, kh, rl, rp, delta_rl])
 
 df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)"]] = df_spt.apply(processar_solo, axis=1)
 
-# Filtro de Profundidade e Cálculo Cumulativo (Apenas a partir do arrasamento)
 cota_fim = cota_assentamento + (comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1.5 * B)
 df_inf = df_spt[(df_spt["Profundidade (m)"] > cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)].copy()
 
@@ -207,16 +200,22 @@ with col_dir:
     st.info(f"Status Estrutural: {'✅ OK' if momento_max_atuante <= M_rd else '❌ FALHA'}")
 
 # -----------------------------------------------------------------------------
-# TABELA DETALHADA AOKI-VELLOSO
+# TABELA DETALHADA UNIFICADA (AOKI-VELLOSO + MOLAS)
 # -----------------------------------------------------------------------------
 st.markdown("---")
-st.subheader("📋 Resistência Geotécnica Aoki-Velloso (Cota a Cota)")
-st.caption("Cálculo cumulativo de resistência por atrito lateral e ponta ao longo do fuste, idêntico à planilha de referência.")
+st.subheader("📋 Discretização Metro a Metro (Aoki-Velloso e Molas)")
+st.caption("Tabela completa com o cálculo cumulativo de resistência por atrito/ponta e os coeficientes de recalque k_v e k_h para lançamento estrutural.")
 
-df_export_aoki = df_inf[["Profundidade (m)", "Tipo de Solo", "N_SPT", "rl (kPa)", "Rp (kN)", "Rl Acum. (kN)", "Rc Adm (kN)"]].copy()
+df_export_completo = df_inf[[
+    "Profundidade (m)", "Tipo de Solo", "N_SPT", 
+    "kv (kN/m³)", "kh (kN/m³)", 
+    "rl (kPa)", "Rp (kN)", "Rl Acum. (kN)", "Rc Adm (kN)"
+]].copy()
 
 st.dataframe(
-    df_export_aoki.style.format({
+    df_export_completo.style.format({
+        "kv (kN/m³)": "{:,.2f}",
+        "kh (kN/m³)": "{:,.2f}",
         "rl (kPa)": "{:,.2f}",
         "Rp (kN)": "{:,.2f}",
         "Rl Acum. (kN)": "{:,.2f}",
@@ -236,7 +235,7 @@ if tipo_fundacao == "Profunda (Estaca)":
     fig, (ax_cap, ax0, ax1, ax2) = plt.subplots(1, 4, figsize=(22, 5))
     
     # 0. Capacidade de Carga vs Profundidade
-    ax_cap.plot(df_export_aoki["Rc Adm (kN)"], df_export_aoki["Profundidade (m)"], label="Carga Admissível", marker="D", color="green")
+    ax_cap.plot(df_export_completo["Rc Adm (kN)"], df_export_completo["Profundidade (m)"], label="Carga Admissível", marker="D", color="green")
     ax_cap.axvline(x=carga_V, color='red', linestyle='--', label="Carga Atuante")
     ax_cap.invert_yaxis()
     ax_cap.set_xlabel("Capacidade Admissível (kN)")
@@ -245,8 +244,9 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax_cap.grid(True, linestyle="--", alpha=0.6)
     ax_cap.legend()
     
-    # 1. Perfil de Molas Geotécnicas
+    # 1. Perfil de Molas Geotécnicas (k_v e k_h restaurados)
     ax0.plot(df_spt["kh (kN/m³)"], df_spt["Profundidade (m)"], label="k_h Horizontal", marker="o", color="#1f77b4")
+    ax0.plot(df_spt["kv (kN/m³)"], df_spt["Profundidade (m)"], label="k_v Vertical", marker="s", color="#ff7f0e")
     ax0.axhspan(cota_assentamento, cota_fim, color='yellow', alpha=0.2, label="Trecho da Estaca")
     ax0.invert_yaxis()
     ax0.set_xlabel("Módulo de Recalque (kN/m³)")
