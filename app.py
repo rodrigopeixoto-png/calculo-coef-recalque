@@ -29,7 +29,7 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
 st.title("🏗️ Dimensionamento e Integração Solo-Estrutura de Estacas")
-st.caption("Cálculo de Molas, Capacidade de Carga (Aoki-Velloso) e Esforços Internos (Winkler)")
+st.caption("Molas, Capacidade de Carga e Verificação Estrutural (Flexão e Cisalhamento)")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - PARÂMETROS
@@ -40,20 +40,25 @@ tipo_fundacao = st.sidebar.selectbox("Tipo de Fundação", ["Profunda (Estaca)",
 if tipo_fundacao == "Profunda (Estaca)":
     metodo_construtivo = st.sidebar.radio("Método Construtivo:", list(FATORES_CONSTRUTIVOS.keys()))
 else:
-    metodo_construtivo = "Cravada (Pré-moldada, Metálica)" # Default for safe logic
+    metodo_construtivo = "Cravada (Pré-moldada, Metálica)"
 
 secao = st.sidebar.selectbox("Geometria da Seção", ["Circular", "Quadrada"])
 B = st.sidebar.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.4, step=0.05)
 cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value=0.0, value=1.0, step=0.5)
 comprimento_estaca = st.sidebar.number_input("Comprimento da Estaca (m)", min_value=1.0, value=10.0, step=0.5) if tipo_fundacao == "Profunda (Estaca)" else 0.0
-nu = st.sidebar.slider("Coeficiente de Poisson do Solo (ν)", min_value=0.1, max_value=0.5, value=0.35, step=0.01)
+nu = st.sidebar.slider("Coeficiente de Poisson (v)", min_value=0.1, max_value=0.5, value=0.35, step=0.01)
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚖️ Cargas e Material (ELU)")
+st.sidebar.header("⚖️ Cargas e Material")
 fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
-carga_V = st.sidebar.number_input("Carga Vertical Atuante (kN)", min_value=0.0, value=500.0, step=50.0)
-carga_H = st.sidebar.number_input("Força Horizontal de Topo (kN)", min_value=0.0, value=20.0, step=5.0)
-carga_M = st.sidebar.number_input("Momento de Topo (kN.m)", min_value=0.0, value=0.0, step=5.0)
+taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
+fyk = st.sidebar.number_input("Resistência do Aco (fyk) em MPa", min_value=250.0, value=500.0, step=50.0)
+
+st.sidebar.markdown("---")
+st.sidebar.header("🔽 Esforços Atuantes (Topo)")
+carga_V = st.sidebar.number_input("Carga Vertical (kN)", min_value=0.0, value=500.0, step=50.0)
+carga_H = st.sidebar.number_input("Forca Horizontal (kN)", min_value=0.0, value=20.0, step=5.0)
+carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
 # TABELA DE SONDAGEM SPT
@@ -88,26 +93,22 @@ with col_esq:
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO)
 # -----------------------------------------------------------------------------
 df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
-df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 40)) # Limite usual de ponta para Aoki
+df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 40))
 
-# Propriedades da Seção Estrutural
 Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
 Inercia_c = (np.pi * B**4) / 64 if secao == "Circular" else (B**4) / 12
 Perimetro = np.pi * B if secao == "Circular" else 4 * B
-E_c = 5600 * np.sqrt(fck) * 1000 # E_ci em kPa (kN/m²)
+E_c = 5600 * np.sqrt(fck) * 1000 # E_ci em kPa
 
-# Geotecnia metro a metro
 def processar_solo(row):
     solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Silte"])
     n = row["N_corr"]
     
-    # Molas
     es = solo["alpha_k"] * n
     k1 = 1200 * n
     kv = k1 * (0.3 / B) if solo["comportamento"] == "coesivo" else k1 * ((B + 0.3) / (2 * B)) ** 2
     kh = kv * nu
     
-    # Aoki-Velloso
     qs = (solo["aoki_alpha"] * solo["aoki_K"] * n) / FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
     qp = (solo["aoki_K"] * row["N_Aoki"]) / FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"]
     
@@ -115,37 +116,42 @@ def processar_solo(row):
 
 df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "qs_Aoki (kPa)", "qp_Aoki (kPa)"]] = df_spt.apply(processar_solo, axis=1)
 
-# Filtro do Fuste
 cota_fim = cota_assentamento + comprimento_estaca
 df_inf = df_spt[(df_spt["Profundidade (m)"] >= cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)]
 if df_inf.empty: df_inf = df_spt.head(1)
 
 # -----------------------------------------------------------------------------
-# CÁLCULOS GLOBAIS E ESTRUTURAIS
+# CÁLCULOS ESTRUTURAIS E GEOTÉCNICOS GLOBAIS
 # -----------------------------------------------------------------------------
-# Capacidade Geotécnica
-carga_atrito_qs = df_inf["qs_Aoki (kPa)"].sum() * 1.0 * Perimetro # qs * espessura_camada(1m) * Perimetro
+# 1. Capacidade Geotecnica (Vertical)
+carga_atrito_qs = df_inf["qs_Aoki (kPa)"].sum() * 1.0 * Perimetro
 carga_ponta_qp = df_inf.iloc[-1]["qp_Aoki (kPa)"] * Area_c
 Q_ult = carga_atrito_qs + carga_ponta_qp
-Q_adm = Q_ult / 2.0 # Fator de segurança global = 2.0
+Q_adm = Q_ult / 2.0
 
-# Capacidade Estrutural (Carga Axial Simples)
-N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4)
+# 2. Resistencia Estrutural (Concreto Armado)
+N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4) # Compressao Pura
+fyd = (fyk / 1.15) * 1000 # Tensao de escoamento de calculo do aco em kPa
+A_s = (taxa_armadura / 100) * Area_c # Area de aco em m2
+braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
+M_rd = A_s * fyd * braco_alavanca # Momento Fletor Resistente Aproximado (kN.m)
 
-# Integração Solo-Estrutura (Winkler / Matlock & Reese Analítico)
+# 3. Integracao Solo-Estrutura (Winkler)
 kh_global = df_inf["kh (kN/m³)"].mean()
-K_linha = kh_global * B # Mola de linha em kN/m²
+K_linha = kh_global * B
 lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25
-
-# Vetor de profundidade local da estaca (z = 0 no topo da estaca)
 z_vals = np.linspace(0, comprimento_estaca, 100)
 
-# Solução exata da equação diferencial de Winkler para estacas longas
+# Esforcos Atuantes (Cargas aplicadas pelo usuario)
 y_disp = (np.exp(-lamb * z_vals) / (2 * E_c * Inercia_c * lamb**3)) * (carga_H * np.cos(lamb * z_vals) + lamb * carga_M * (np.cos(lamb * z_vals) + np.sin(lamb * z_vals)))
 m_flet = (np.exp(-lamb * z_vals) / lamb) * (carga_H * np.sin(lamb * z_vals) + lamb * carga_M * (np.cos(lamb * z_vals) - np.sin(lamb * z_vals)))
-
-momento_max = np.max(np.abs(m_flet))
+momento_max_atuante = np.max(np.abs(m_flet))
 deslocamento_max_mm = np.max(np.abs(y_disp)) * 1000
+
+# Forca Horizontal Resistente (H_rd) - Forca H que gera M_max = M_rd (Considerando M_topo = 0)
+m_flet_unit = (np.exp(-lamb * z_vals) / lamb) * (1.0 * np.sin(lamb * z_vals))
+momento_max_unit = np.max(np.abs(m_flet_unit))
+H_rd = M_rd / momento_max_unit
 
 # -----------------------------------------------------------------------------
 # PAINEL DE RESULTADOS (COLUNA DIREITA)
@@ -153,26 +159,27 @@ deslocamento_max_mm = np.max(np.abs(y_disp)) * 1000
 with col_dir:
     st.subheader("📊 Relatório de Capacidade")
     
-    st.markdown("**1. Capacidade Vertical (Aoki-Velloso)**")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Atrito Lateral ($Q_s$)", f"{carga_atrito_qs:,.0f} kN")
-    c2.metric("Ponta ($Q_p$)", f"{carga_ponta_qp:,.0f} kN")
-    c3.metric("Carga Adm. ($Q_{adm}$)", f"{Q_adm:,.0f} kN")
-    
+    st.markdown("**1. Capacidade Vertical Geotécnica (Aoki)**")
+    c1, c2 = st.columns(2)
+    c1.metric("Carga Adm. (Q_adm)", f"{Q_adm:,.0f} kN")
+    c2.metric("Carga Atuante", f"{carga_V:,.0f} kN")
     status_geo = "✅ OK" if carga_V <= Q_adm else "❌ FALHA"
-    st.info(f"**Verificação Geotécnica:** Carga Atuante ({carga_V} kN) vs Resistência ({Q_adm:,.0f} kN) ➔ {status_geo}")
+    st.info(f"Status Geotécnico: {status_geo}")
 
-    st.markdown("**2. Capacidade Estrutural do Concreto**")
-    status_est = "✅ OK" if carga_V <= N_d_max else "❌ FALHA"
-    st.info(f"**Verificação Axial:** Compressão Máx. Projeto = {N_d_max:,.0f} kN ➔ {status_est}")
-
-    st.markdown("**3. Integração Solo-Estrutura (Matlock/Winkler)**")
+    st.markdown("**2. Resistência Estrutural (Estaca)**")
     m1, m2 = st.columns(2)
-    m1.metric("Momento Máximo Fuste", f"{momento_max:.2f} kN.m")
-    m2.metric("Deslocamento Topo", f"{deslocamento_max_mm:.2f} mm")
+    m1.metric("Momento Resistente (M_Rd)", f"{M_rd:.1f} kN.m")
+    m2.metric("Momento Máximo Atuante", f"{momento_max_atuante:.1f} kN.m")
+    
+    h1, h2 = st.columns(2)
+    h1.metric("Força Horizontal Resistente", f"{H_rd:.1f} kN")
+    h2.metric("Deslocamento de Topo", f"{deslocamento_max_mm:.2f} mm")
+    
+    status_flexao = "✅ OK" if momento_max_atuante <= M_rd else "❌ FALHA"
+    st.info(f"Status Estrutural à Flexão: {status_flexao}")
 
 # -----------------------------------------------------------------------------
-# GRÁFICOS DE ESFORÇOS (MOMENTO E DESLOCAMENTO)
+# GRÁFICOS DE ESFORÇOS
 # -----------------------------------------------------------------------------
 if tipo_fundacao == "Profunda (Estaca)":
     st.markdown("---")
@@ -180,22 +187,23 @@ if tipo_fundacao == "Profunda (Estaca)":
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
-    # Gráfico de Momento Fletor
-    ax1.plot(m_flet, z_vals, color="red", linewidth=2, label="Momento Fletor")
+    ax1.plot(m_flet, z_vals, color="red", linewidth=2, label="Momento Atuante")
     ax1.fill_betweenx(z_vals, 0, m_flet, color="red", alpha=0.2)
+    ax1.axvline(x=M_rd, color='darkred', linestyle='--', label="Limite M_Rd")
+    ax1.axvline(x=-M_rd, color='darkred', linestyle='--')
     ax1.invert_yaxis()
     ax1.set_xlabel("Momento Fletor (kN.m)")
-    ax1.set_ylabel("Profundidade na Estaca (z em metros)")
-    ax1.set_title("Diagrama de Momento Fletor - $M(z)$")
+    ax1.set_ylabel("Profundidade (z em metros)")
+    ax1.set_title("Diagrama de Momento Fletor")
     ax1.grid(True, linestyle="--", alpha=0.6)
+    ax1.legend()
     
-    # Gráfico de Deslocamento Horizontal
-    ax2.plot(y_disp * 1000, z_vals, color="blue", linewidth=2, label="Deslocamento Horizontal")
+    ax2.plot(y_disp * 1000, z_vals, color="blue", linewidth=2, label="Deslocamento")
     ax2.fill_betweenx(z_vals, 0, y_disp * 1000, color="blue", alpha=0.2)
     ax2.invert_yaxis()
-    ax2.set_xlabel("Deslocamento $y$ (mm)")
-    ax2.set_ylabel("Profundidade na Estaca (z em metros)")
-    ax2.set_title("Elástica da Estaca - $y(z)$")
+    ax2.set_xlabel("Deslocamento (mm)")
+    ax2.set_ylabel("Profundidade (z em metros)")
+    ax2.set_title("Elástica da Estaca")
     ax2.grid(True, linestyle="--", alpha=0.6)
     
     st.pyplot(fig)
