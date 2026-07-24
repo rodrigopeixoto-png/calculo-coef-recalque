@@ -74,22 +74,22 @@ col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    profundidades = list(range(1, 16))
     
     spt_padrao = [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24]
-    # Inserindo o Aterro nos dois primeiros metros como exemplo padrão
     solos_modelo = ["Aterro", "Aterro"] + ["Argila"] * 13 
 
+    # Transformamos a Profundidade no Índice nativo da tabela!
     df_spt_input = pd.DataFrame({
-        "Profundidade (m)": profundidades,
         "N_SPT": spt_padrao,
         "Tipo de Solo": solos_modelo
     })
+    df_spt_input.index = range(1, 16)
+    df_spt_input.index.name = "Profundidade (m)"
 
-    df_spt = st.data_editor(
+    # Renderiza a tabela. O Streamlit gerencia a numeração do índice automaticamente.
+    df_spt_editado = st.data_editor(
         df_spt_input,
         column_config={
-            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
             "N_SPT": st.column_config.NumberColumn(min_value=1, max_value=100, step=1),
             "Tipo de Solo": st.column_config.SelectboxColumn(options=OPCOES_SOLO)
         },
@@ -100,10 +100,13 @@ with col_esq:
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
-# Tratar linhas vazias (None) recém-criadas pelo usuário
+# Puxamos o índice de volta para virar uma coluna normal para os cálculos matemáticos
+df_spt = df_spt_editado.reset_index()
+
+# Limpeza automática: se o usuário acabou de apertar Enter, previne erros de valores vazios
+df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1) # Força a ordem exata
 df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
 df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
-df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1) # Auto-numera as linhas
 
 df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
