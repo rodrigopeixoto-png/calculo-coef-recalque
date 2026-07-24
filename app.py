@@ -100,6 +100,11 @@ with col_esq:
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
+# Tratar linhas vazias (None) recém-criadas pelo usuário
+df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
+df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
+df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1) # Auto-numera as linhas
+
 df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 
