@@ -89,7 +89,7 @@ with col_esq:
     df_spt = st.data_editor(
         df_spt_input,
         column_config={
-            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1)),
+            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
             "N_SPT": st.column_config.NumberColumn(min_value=1, max_value=100, step=1),
             "Tipo de Solo": st.column_config.SelectboxColumn(options=OPCOES_SOLO)
         },
