@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 # DICIONÁRIO GEOTÉCNICO DE SOLOS (Parâmetros exatos Aoki-Velloso e Molas)
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
+    "Aterro":                {"aoki_K": 0,    "aoki_alpha": 0.000, "alpha_k": 800,  "comportamento": "intermediario"},
     "Areia":                 {"aoki_K": 1000, "aoki_alpha": 0.014, "alpha_k": 3000, "comportamento": "granular"},
     "Areia Siltosa":         {"aoki_K": 800,  "aoki_alpha": 0.020, "alpha_k": 2800, "comportamento": "granular"},
     "Areia Silto-argilosa":  {"aoki_K": 700,  "aoki_alpha": 0.024, "alpha_k": 2500, "comportamento": "granular"},
@@ -76,7 +77,8 @@ with col_esq:
     profundidades = list(range(1, 16))
     
     spt_padrao = [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24]
-    solos_modelo = ["Argila"] * 15
+    # Inserindo o Aterro nos dois primeiros metros como exemplo padrão
+    solos_modelo = ["Aterro", "Aterro"] + ["Argila"] * 13 
 
     df_spt_input = pd.DataFrame({
         "Profundidade (m)": profundidades,
@@ -146,6 +148,7 @@ if tipo_fundacao == "Rasa (Sapata/Radier)":
     kv_global = df_inf["kv (kN/m³)"].mean()
 else:
     n_ponta = df_inf.iloc[-1]["N_corr"]
+    # Se a ponta por acaso parar em Aterro (incomum, mas possível), o programa lidará normalmente
     es_ponta = 1000 * n_ponta if "Escavada" in metodo_construtivo else 3000 * n_ponta
     kv_global = es_ponta / (B * (1 - nu**2) * 0.85)
 
@@ -204,7 +207,7 @@ with col_dir:
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("📋 Discretização Metro a Metro (Aoki-Velloso e Molas)")
-st.caption("Tabela completa com o cálculo cumulativo de resistência por atrito/ponta e os coeficientes de recalque k_v e k_h para lançamento estrutural.")
+st.caption("Tabela completa com o cálculo cumulativo de resistência por atrito/ponta e os coeficientes de recalque k_v e k_h para lançamento estrutural. Nota: O solo tipo 'Aterro' não contribui para a capacidade de carga.")
 
 df_export_completo = df_inf[[
     "Profundidade (m)", "Tipo de Solo", "N_SPT", 
@@ -244,7 +247,7 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax_cap.grid(True, linestyle="--", alpha=0.6)
     ax_cap.legend()
     
-    # 1. Perfil de Molas Geotécnicas (k_v e k_h restaurados)
+    # 1. Perfil de Molas Geotécnicas (k_v e k_h)
     ax0.plot(df_spt["kh (kN/m³)"], df_spt["Profundidade (m)"], label="k_h Horizontal", marker="o", color="#1f77b4")
     ax0.plot(df_spt["kv (kN/m³)"], df_spt["Profundidade (m)"], label="k_v Vertical", marker="s", color="#ff7f0e")
     ax0.axhspan(cota_assentamento, cota_fim, color='yellow', alpha=0.2, label="Trecho da Estaca")
