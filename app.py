@@ -68,26 +68,28 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT (Com auto-preenchimento mágico)
+# TABELA DE SONDAGEM SPT
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
+    profundidades = list(range(1, 16))
     
-    # 1. Cria a tabela inicial na memória do Streamlit se ela não existir
-    if "tabela_spt" not in st.session_state:
-        st.session_state.tabela_spt = pd.DataFrame({
-            "Profundidade (m)": list(range(1, 16)),
-            "N_SPT": [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24],
-            "Tipo de Solo": ["Aterro", "Aterro"] + ["Argila"] * 13
-        })
+    spt_padrao = [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24]
+    solos_modelo = ["Aterro", "Aterro"] + ["Argila"] * 13 
 
-    # 2. Mostra a tabela na tela puxando da memória
+    df_spt_input = pd.DataFrame({
+        "Profundidade (m)": profundidades,
+        "N_SPT": spt_padrao,
+        "Tipo de Solo": solos_modelo
+    })
+
     df_editado = st.data_editor(
-        st.session_state.tabela_spt,
+        df_spt_input,
         column_config={
-            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", disabled=True), # Bloqueada
+            # Removido o disabled=True para liberar a célula e não dar erro ao criar nova linha
+            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
             "N_SPT": st.column_config.NumberColumn("N_SPT", min_value=1, max_value=100, step=1),
             "Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)
         },
@@ -95,27 +97,17 @@ with col_esq:
         use_container_width=True
     )
 
-# 3. Lógica que limpa os Nones e numera a nova linha instantaneamente
-tem_celula_vazia = df_editado["Profundidade (m)"].isnull().any()
-
-df_spt = df_editado.copy()
-df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1) # Refaz a numeração sequencial
-df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
-df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
-
-# Atualiza a memória com a tabela limpa
-st.session_state.tabela_spt = df_spt
-
-# Se você acabou de criar uma linha e ela deu 'None', recarrega a tela na hora!
-if tem_celula_vazia:
-    try:
-        st.rerun()
-    except AttributeError:
-        st.experimental_rerun()
-
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
+df_spt = df_editado.copy()
+
+# Tratamento invisível: Auto-numera a profundidade para o cálculo nunca quebrar, 
+# e previne erros se você deixar o N_SPT em branco momentaneamente.
+df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
+df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
+df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
+
 df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 
