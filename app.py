@@ -36,7 +36,7 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
 st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
-st.caption("Verificação Geotécnica, Esforços (Winkler) e Comprimento de Armação (NBR 6122)")
+st.caption("Verificação Geotécnica, Esforços (Winkler) e Comprimento de Armação (NBR 6118 / NBR 6122)")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - PARÂMETROS
@@ -190,24 +190,31 @@ momento_max_unit = np.max(np.max(np.abs(m_flet_unit)))
 H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
 
 # -----------------------------------------------------------------------------
-# DEDUZINDO O COMPRIMENTO DA ARMADURA (L_arm) CONFORME NBR 6122 / NBR 6118
+# DEDUZINDO O COMPRIMENTO DA ARMADURA (NBR 6118 / NBR 6122)
 # -----------------------------------------------------------------------------
+# 1. Momento de Fissuração (M_cr) - Concreto com Carga Axial Favorável
+f_ctk_inf = 0.21 * (fck ** (2/3)) * 1000 # Resistência à tração em kPa
+W_c = Inercia_c / (B / 2) # Módulo Resistente Elástico m3
+alpha_flexao = 1.5 if secao == "Quadrada" else 1.2
+# M_cr = Momento Resistente do concreto simples à tração somado ao benefício da compressão do pilar
+M_cr = W_c * (alpha_flexao * f_ctk_inf + (carga_V / Area_c)) 
+
 idx_max_m = np.argmax(np.abs(m_flet))
 m_apos_max = np.abs(m_flet[idx_max_m:])
 z_apos_max = z_vals[idx_max_m:]
 
-# Ponto onde o momento fletor se torna desprezível (< 2% do máximo)
-idx_nulo = np.where(m_apos_max <= 0.02 * max(momento_max_atuante, 0.1))[0]
+# 2. Encontra onde o momento cai abaixo do M_cr (solo/concreto já seguram sozinhos)
+idx_nulo = np.where(m_apos_max <= M_cr)[0]
 z_momento_nulo = z_apos_max[idx_nulo[0]] if len(idx_nulo) > 0 else comprimento_estaca
 
-# Comprimento de Ancoragem Lb (aprox. 40 * phi = 0.40m)
+# 3. Comprimento de Ancoragem Lb (aprox. 40 * phi = 0.40m)
 L_b = 0.40 
 L_flexao_necessario = z_momento_nulo + L_b
 
-# Comprimento Mínimo Normativo da NBR 6122 (Máx entre 3.0m e 5*B)
+# 4. Comprimento Mínimo Normativo da NBR 6122 (Máx entre 3.0m e 5*B)
 L_min_norma = max(3.0, 5 * B)
 
-# Comprimento final adotado para a gaiola de armadura
+# 5. Comprimento final adotado para a gaiola de armadura
 L_armadura = min(comprimento_estaca, max(L_min_norma, L_flexao_necessario)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 
 # -----------------------------------------------------------------------------
@@ -245,9 +252,10 @@ with col_dir:
         st.write(f"**Geometria:** {secao} ({B*100:.0f} cm)")
         st.write(f"**Armadura Adotada:** **{n_barras} Φ 10.0 mm**")
         st.write(f"**Área de Aço $A_s$:** {A_s_real*10000:.2f} cm²")
-        st.write(f"**Profundidade Momento Nulo:** {z_momento_nulo:.2f} m")
-        st.write(f"**Comprimento Gaiola ($L_{{arm}}$):** **{L_armadura:.2f} m**")
-        st.caption(f"*Nota: Considerado $L_{{min}}$ NBR 6122 = {L_min_norma:.2f}m e ancoragem $L_b$ = 0.40m.*")
+        st.write(f"**Momento Fissuração ($M_{{cr}}$):** {M_cr:.1f} kN.m")
+        st.write(f"**Profundidade do $M_{{cr}}$:** {z_momento_nulo:.2f} m")
+        st.write(f"**Gaiola Final Adotada ($L_{{arm}}$):** **{L_armadura:.2f} m**")
+        st.caption(f"*Nota: O comprimento adotado respeita o mínimo da norma NBR 6122 ({L_min_norma:.2f}m) garantindo ancoragem das tensões de flexão.*")
 
     with col_img:
         fig_sec, ax_sec = plt.subplots(figsize=(2.8, 2.8))
@@ -340,6 +348,7 @@ if tipo_fundacao == "Profunda (Estaca)":
     # 2. Diagrama de Momentos Fletores
     ax1.plot(m_flet, z_vals, color="red", linewidth=2, label="Momento Atuante")
     ax1.fill_betweenx(z_vals, 0, m_flet, color="red", alpha=0.2)
+    ax1.axvline(x=M_cr, color='green', linestyle=':', label="Fissuração M_cr")
     ax1.axvline(x=M_rd, color='darkred', linestyle='--', label="Limite M_Rd")
     ax1.axvline(x=-M_rd, color='darkred', linestyle='--')
     ax1.invert_yaxis()
