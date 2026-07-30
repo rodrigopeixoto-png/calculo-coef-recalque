@@ -36,7 +36,7 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
 st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
-st.caption("Verificação Geotécnica, Esforços (Winkler) e Detalhamento da Armadura")
+st.caption("Verificação Geotécnica, Esforços (Winkler) e Comprimento de Armação (NBR 6122)")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - PARÂMETROS
@@ -157,26 +157,18 @@ Q_adm = df_inf.iloc[-1]["Rc Adm (kN)"] if not df_inf.empty else 0
 N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4) 
 fyd = (fyk / 1.15) * 1000
 
-# -----------------------------------------------------------------------------
-# NOVA LÓGICA DE ARREDONDAMENTO DA ARMADURA (Bitola = 10mm)
-# -----------------------------------------------------------------------------
-area_barra_10mm = (np.pi * (0.010)**2) / 4  # m² (aprox 0.785 cm²)
+# Arredondamento da Armadura (Bitola 10mm)
+area_barra_10mm = (np.pi * (0.010)**2) / 4  # m²
 A_s_teorico = (taxa_armadura / 100) * Area_c
 n_raw = A_s_teorico / area_barra_10mm
 frac = n_raw - np.floor(n_raw)
 
-# Regra: Se a fração < 0.5 arredonda para baixo, se >= 0.5 arredonda para cima
-if frac < 0.5:
-    n_barras = int(np.floor(n_raw))
-else:
-    n_barras = int(np.ceil(n_raw))
-
-# Garantir limites normativos e geométricos mínimos
-n_barras = max(n_barras, 6) # Mínimo de 6 barras por estaca
+n_barras = int(np.floor(n_raw)) if frac < 0.5 else int(np.ceil(n_raw))
+n_barras = max(n_barras, 6)
 
 if secao == "Quadrada":
     if n_barras % 4 != 0:
-        n_barras += (4 - n_barras % 4) # Força múltiplo de 4 para simetria
+        n_barras += (4 - n_barras % 4)
     n_barras = max(n_barras, 8)
 
 A_s_real = n_barras * area_barra_10mm
@@ -186,7 +178,7 @@ M_rd = A_s_real * fyd * braco_alavanca
 # Solução de Winkler (Matlock & Reese)
 K_linha = kh_global * B
 lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25
-z_vals = np.linspace(0, comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1, 100)
+z_vals = np.linspace(0, comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1, 200)
 
 y_disp = (np.exp(-lamb * z_vals) / (2 * E_c * Inercia_c * lamb**3)) * (carga_H * np.cos(lamb * z_vals) + lamb * carga_M * (np.cos(lamb * z_vals) + np.sin(lamb * z_vals)))
 m_flet = (np.exp(-lamb * z_vals) / lamb) * (carga_H * np.sin(lamb * z_vals) + lamb * carga_M * (np.cos(lamb * z_vals) - np.sin(lamb * z_vals)))
@@ -194,8 +186,29 @@ momento_max_atuante = np.max(np.abs(m_flet)) if len(m_flet) > 0 else 0
 deslocamento_max_mm = np.max(np.abs(y_disp)) * 1000 if len(y_disp) > 0 else 0
 
 m_flet_unit = (np.exp(-lamb * z_vals) / lamb) * (1.0 * np.sin(lamb * z_vals))
-momento_max_unit = np.max(np.abs(m_flet_unit))
+momento_max_unit = np.max(np.max(np.abs(m_flet_unit)))
 H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
+
+# -----------------------------------------------------------------------------
+# DEDUZINDO O COMPRIMENTO DA ARMADURA (L_arm) CONFORME NBR 6122 / NBR 6118
+# -----------------------------------------------------------------------------
+idx_max_m = np.argmax(np.abs(m_flet))
+m_apos_max = np.abs(m_flet[idx_max_m:])
+z_apos_max = z_vals[idx_max_m:]
+
+# Ponto onde o momento fletor se torna desprezível (< 2% do máximo)
+idx_nulo = np.where(m_apos_max <= 0.02 * max(momento_max_atuante, 0.1))[0]
+z_momento_nulo = z_apos_max[idx_nulo[0]] if len(idx_nulo) > 0 else comprimento_estaca
+
+# Comprimento de Ancoragem Lb (aprox. 40 * phi = 0.40m)
+L_b = 0.40 
+L_flexao_necessario = z_momento_nulo + L_b
+
+# Comprimento Mínimo Normativo da NBR 6122 (Máx entre 3.0m e 5*B)
+L_min_norma = max(3.0, 5 * B)
+
+# Comprimento final adotado para a gaiola de armadura
+L_armadura = min(comprimento_estaca, max(L_min_norma, L_flexao_necessario)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 
 # -----------------------------------------------------------------------------
 # PAINEL DE RESULTADOS (COLUNA DIREITA)
@@ -225,50 +238,48 @@ with col_dir:
     st.info(f"Status Estrutural: {'✅ OK' if momento_max_atuante <= M_rd else '❌ FALHA'}")
 
     st.markdown("---")
-    st.markdown("**4. Detalhamento da Seção (Barras de Φ 10.0 mm)**")
+    st.markdown("**4. Detalhamento e Comprimento da Armadura**")
     
-    fig_sec, ax_sec = plt.subplots(figsize=(3, 3))
-    cobrimento = 0.04
-    
-    if secao == "Circular":
-        R = B / 2
-        Rs = R - cobrimento
-        ax_sec.add_patch(plt.Circle((0, 0), R, color='#E0E0E0', ec='black', lw=1.5))
-        ax_sec.add_patch(plt.Circle((0, 0), Rs, color='none', ec='black', lw=1, ls='--'))
-        
-        theta = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
-        ax_sec.plot(Rs * np.cos(theta), Rs * np.sin(theta), 'ro', markersize=7, markeredgecolor='darkred')
-        
-    else:
-        L = B / 2
-        Ls = L - cobrimento
-        ax_sec.add_patch(plt.Rectangle((-L, -L), B, B, color='#E0E0E0', ec='black', lw=1.5))
-        ax_sec.add_patch(plt.Rectangle((-Ls, -Ls), B - 2*cobrimento, B - 2*cobrimento, fill=False, ec='black', lw=1, ls='--'))
-        
-        x_bars, y_bars = [], []
-        n_per_side = n_barras // 4
-        corners_x, corners_y = [-Ls, Ls, Ls, -Ls], [Ls, Ls, -Ls, -Ls]
-        for i in range(4):
-            x1, y1 = corners_x[i], corners_y[i]
-            x2, y2 = corners_x[(i+1)%4], corners_y[(i+1)%4]
-            for j in range(n_per_side):
-                f = j / n_per_side
-                x_bars.append(x1 + f * (x2 - x1))
-                y_bars.append(y1 + f * (y2 - y1))
-        ax_sec.plot(x_bars, y_bars, 'ro', markersize=7, markeredgecolor='darkred')
-
-    ax_sec.set_xlim(-B/2 - 0.05, B/2 + 0.05)
-    ax_sec.set_ylim(-B/2 - 0.05, B/2 + 0.05)
-    ax_sec.set_aspect('equal')
-    ax_sec.axis('off')
-    
-    col_info, col_img = st.columns([1, 1.2])
+    col_info, col_img = st.columns([1.1, 1])
     with col_info:
-        st.write(f"**Geometria:**\n{secao}")
-        st.write(f"**Dimensão:**\n{B*100:.0f} cm")
-        st.write(f"**Armadura Adotada:**\n**{n_barras} Φ 10.0 mm**")
-        st.write(f"**$A_{{s,real}}$:**\n{A_s_real*10000:.2f} cm²")
+        st.write(f"**Geometria:** {secao} ({B*100:.0f} cm)")
+        st.write(f"**Armadura Adotada:** **{n_barras} Φ 10.0 mm**")
+        st.write(f"**Área de Aço $A_s$:** {A_s_real*10000:.2f} cm²")
+        st.write(f"**Profundidade Momento Nulo:** {z_momento_nulo:.2f} m")
+        st.write(f"**Comprimento Gaiola ($L_{{arm}}$):** **{L_armadura:.2f} m**")
+        st.caption(f"*Nota: Considerado $L_{{min}}$ NBR 6122 = {L_min_norma:.2f}m e ancoragem $L_b$ = 0.40m.*")
+
     with col_img:
+        fig_sec, ax_sec = plt.subplots(figsize=(2.8, 2.8))
+        cobrimento = 0.04
+        if secao == "Circular":
+            R = B / 2
+            Rs = R - cobrimento
+            ax_sec.add_patch(plt.Circle((0, 0), R, color='#E0E0E0', ec='black', lw=1.5))
+            ax_sec.add_patch(plt.Circle((0, 0), Rs, color='none', ec='black', lw=1, ls='--'))
+            theta = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
+            ax_sec.plot(Rs * np.cos(theta), Rs * np.sin(theta), 'ro', markersize=6, markeredgecolor='darkred')
+        else:
+            L = B / 2
+            Ls = L - cobrimento
+            ax_sec.add_patch(plt.Rectangle((-L, -L), B, B, color='#E0E0E0', ec='black', lw=1.5))
+            ax_sec.add_patch(plt.Rectangle((-Ls, -Ls), B - 2*cobrimento, B - 2*cobrimento, fill=False, ec='black', lw=1, ls='--'))
+            x_bars, y_bars = [], []
+            n_per_side = n_barras // 4
+            corners_x, corners_y = [-Ls, Ls, Ls, -Ls], [Ls, Ls, -Ls, -Ls]
+            for i in range(4):
+                x1, y1 = corners_x[i], corners_y[i]
+                x2, y2 = corners_x[(i+1)%4], corners_y[(i+1)%4]
+                for j in range(n_per_side):
+                    f = j / n_per_side
+                    x_bars.append(x1 + f * (x2 - x1))
+                    y_bars.append(y1 + f * (y2 - y1))
+            ax_sec.plot(x_bars, y_bars, 'ro', markersize=6, markeredgecolor='darkred')
+
+        ax_sec.set_xlim(-B/2 - 0.05, B/2 + 0.05)
+        ax_sec.set_ylim(-B/2 - 0.05, B/2 + 0.05)
+        ax_sec.set_aspect('equal')
+        ax_sec.axis('off')
         st.pyplot(fig_sec)
 
 # -----------------------------------------------------------------------------
@@ -298,13 +309,13 @@ st.dataframe(
 )
 
 # -----------------------------------------------------------------------------
-# GRÁFICOS (CAPACIDADE, MOLAS E ESFORÇOS)
+# GRÁFICOS (CAPACIDADE, MOLAS, ESFORÇOS E ELEVAÇÃO DA ARMADURA)
 # -----------------------------------------------------------------------------
 st.markdown("---")
-st.subheader("📈 Diagramas Geotécnicos e Estruturais")
+st.subheader("📈 Diagramas Geotécnicos, Esforços e Elevação da Armadura")
 
 if tipo_fundacao == "Profunda (Estaca)":
-    fig, (ax_cap, ax0, ax1, ax2) = plt.subplots(1, 4, figsize=(22, 5))
+    fig, (ax_cap, ax0, ax1, ax2, ax_elev) = plt.subplots(1, 5, figsize=(25, 5.5))
     
     # 0. Capacidade de Carga vs Profundidade
     ax_cap.plot(df_export_completo["Rc Adm (kN)"], df_export_completo["Profundidade (m)"], label="Carga Admissível", marker="D", color="green")
@@ -344,5 +355,25 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax2.set_xlabel("Deslocamento (mm)")
     ax2.set_title("Elástica da Estaca")
     ax2.grid(True, linestyle="--", alpha=0.6)
+
+    # 4. Desenho da Elevação da Estaca e Comprimento da Gaiola de Armadura
+    ax_elev.plot([-B/2, -B/2], [0, comprimento_estaca], color='grey', lw=2)
+    ax_elev.plot([B/2, B/2], [0, comprimento_estaca], color='grey', lw=2)
+    ax_elev.plot([-B/2, B/2], [comprimento_estaca, comprimento_estaca], color='grey', lw=2)
+    ax_elev.plot([-B/2*1.5, B/2*1.5], [0, 0], color='black', lw=3, label="Topo da Estaca")
     
+    # Desenho da Armadura (Gaiola em vermelho)
+    r_arm = B/2 - 0.04
+    ax_elev.plot([-r_arm, -r_arm], [0, L_armadura], color='red', lw=2.5, label=f"Gaiola L_arm = {L_armadura:.2f}m")
+    ax_elev.plot([r_arm, r_arm], [0, L_armadura], color='red', lw=2.5)
+    ax_elev.plot([-r_arm, r_arm], [L_armadura, L_armadura], color='red', lw=1.5, ls='--')
+    
+    ax_elev.set_xlim(-B*1.2, B*1.2)
+    ax_elev.set_ylim(0, comprimento_estaca * 1.05)
+    ax_elev.invert_yaxis()
+    ax_elev.set_ylabel("Profundidade (m)")
+    ax_elev.set_title("Perfil da Armadura (Elevação)")
+    ax_elev.grid(True, linestyle="--", alpha=0.4)
+    ax_elev.legend(loc="lower right")
+
     st.pyplot(fig)
