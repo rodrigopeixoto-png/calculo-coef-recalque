@@ -101,7 +101,6 @@ with col_esq:
 # -----------------------------------------------------------------------------
 df_spt = df_editado.copy()
 
-# Auto-numera a profundidade p/ evitar erros visuais
 df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
 df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
 df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
@@ -158,20 +157,31 @@ Q_adm = df_inf.iloc[-1]["Rc Adm (kN)"] if not df_inf.empty else 0
 N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4) 
 fyd = (fyk / 1.15) * 1000
 
-# Lógica de Detalhamento das Barras (Bitola Fixa = 10mm)
-area_barra_10mm = (np.pi * (0.010)**2) / 4  # em m² (aprox 0.785 cm²)
+# -----------------------------------------------------------------------------
+# NOVA LÓGICA DE ARREDONDAMENTO DA ARMADURA (Bitola = 10mm)
+# -----------------------------------------------------------------------------
+area_barra_10mm = (np.pi * (0.010)**2) / 4  # m² (aprox 0.785 cm²)
 A_s_teorico = (taxa_armadura / 100) * Area_c
-n_barras = int(np.ceil(A_s_teorico / area_barra_10mm))
-n_barras = max(n_barras, 6) # Regra: Mínimo de 6 barras
+n_raw = A_s_teorico / area_barra_10mm
+frac = n_raw - np.floor(n_raw)
+
+# Regra: Se a fração < 0.5 arredonda para baixo, se >= 0.5 arredonda para cima
+if frac < 0.5:
+    n_barras = int(np.floor(n_raw))
+else:
+    n_barras = int(np.ceil(n_raw))
+
+# Garantir limites normativos e geométricos mínimos
+n_barras = max(n_barras, 6) # Mínimo de 6 barras por estaca
 
 if secao == "Quadrada":
     if n_barras % 4 != 0:
         n_barras += (4 - n_barras % 4) # Força múltiplo de 4 para simetria
-    n_barras = max(n_barras, 8) # Regra: Quadrada simétrica a partir de 6 precisa ter 8
+    n_barras = max(n_barras, 8)
 
-A_s_real = n_barras * area_barra_10mm # Área adotada real!
+A_s_real = n_barras * area_barra_10mm
 braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
-M_rd = A_s_real * fyd * braco_alavanca # Cálculo exato com a armadura física
+M_rd = A_s_real * fyd * braco_alavanca 
 
 # Solução de Winkler (Matlock & Reese)
 K_linha = kh_global * B
@@ -217,9 +227,8 @@ with col_dir:
     st.markdown("---")
     st.markdown("**4. Detalhamento da Seção (Barras de Φ 10.0 mm)**")
     
-    # Renderizando o desenho da seção com matplotlib
     fig_sec, ax_sec = plt.subplots(figsize=(3, 3))
-    cobrimento = 0.04 # 4 cm de cobrimento padrão
+    cobrimento = 0.04
     
     if secao == "Circular":
         R = B / 2
@@ -230,7 +239,7 @@ with col_dir:
         theta = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
         ax_sec.plot(Rs * np.cos(theta), Rs * np.sin(theta), 'ro', markersize=7, markeredgecolor='darkred')
         
-    else: # Quadrada
+    else:
         L = B / 2
         Ls = L - cobrimento
         ax_sec.add_patch(plt.Rectangle((-L, -L), B, B, color='#E0E0E0', ec='black', lw=1.5))
