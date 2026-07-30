@@ -36,7 +36,7 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
 st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
-st.caption("Verificação de Capacidade de Carga (Aoki-Velloso), Molas e Esforços (Winkler)")
+st.caption("Verificação Geotécnica, Esforços (Winkler) e Detalhamento da Armadura")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - PARÂMETROS
@@ -88,7 +88,6 @@ with col_esq:
     df_editado = st.data_editor(
         df_spt_input,
         column_config={
-            # Removido o disabled=True para liberar a célula e não dar erro ao criar nova linha
             "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
             "N_SPT": st.column_config.NumberColumn("N_SPT", min_value=1, max_value=100, step=1),
             "Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)
@@ -102,12 +101,10 @@ with col_esq:
 # -----------------------------------------------------------------------------
 df_spt = df_editado.copy()
 
-# Tratamento invisível: Auto-numera a profundidade para o cálculo nunca quebrar, 
-# e previne erros se você deixar o N_SPT em branco momentaneamente.
+# Auto-numera a profundidade p/ evitar erros visuais
 df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
 df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
 df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
-
 df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
 
@@ -122,7 +119,6 @@ f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
 def processar_solo(row):
     solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
     n = row["N_corr"]
-    
     es = solo["alpha_k"] * n
     k1 = 1200 * n
     kv = k1 * (0.3 / B) if solo["comportamento"] == "coesivo" else k1 * ((B + 0.3) / (2 * B)) ** 2
@@ -131,7 +127,6 @@ def processar_solo(row):
     rl = (solo["aoki_alpha"] * solo["aoki_K"] * n) / f2
     rp = (solo["aoki_K"] * row["N_Aoki"]) / f1 * Area_c
     delta_rl = rl * Perimetro * 1.0 
-    
     return pd.Series([es, kv, kh, rl, rp, delta_rl])
 
 df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)"]] = df_spt.apply(processar_solo, axis=1)
@@ -148,7 +143,7 @@ else:
     df_inf["Rc Adm (kN)"] = 0
 
 # -----------------------------------------------------------------------------
-# CÁLCULOS GLOBAIS ESTRUTURAIS
+# CÁLCULOS GLOBAIS ESTRUTURAIS E DETALHAMENTO DE ARMADURA
 # -----------------------------------------------------------------------------
 kh_global = df_inf["kh (kN/m³)"].mean()
 
@@ -160,13 +155,25 @@ else:
     kv_global = es_ponta / (B * (1 - nu**2) * 0.85)
 
 Q_adm = df_inf.iloc[-1]["Rc Adm (kN)"] if not df_inf.empty else 0
-
 N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4) 
 fyd = (fyk / 1.15) * 1000
-A_s = (taxa_armadura / 100) * Area_c
-braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
-M_rd = A_s * fyd * braco_alavanca 
 
+# Lógica de Detalhamento das Barras (Bitola Fixa = 10mm)
+area_barra_10mm = (np.pi * (0.010)**2) / 4  # em m² (aprox 0.785 cm²)
+A_s_teorico = (taxa_armadura / 100) * Area_c
+n_barras = int(np.ceil(A_s_teorico / area_barra_10mm))
+n_barras = max(n_barras, 6) # Regra: Mínimo de 6 barras
+
+if secao == "Quadrada":
+    if n_barras % 4 != 0:
+        n_barras += (4 - n_barras % 4) # Força múltiplo de 4 para simetria
+    n_barras = max(n_barras, 8) # Regra: Quadrada simétrica a partir de 6 precisa ter 8
+
+A_s_real = n_barras * area_barra_10mm # Área adotada real!
+braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
+M_rd = A_s_real * fyd * braco_alavanca # Cálculo exato com a armadura física
+
+# Solução de Winkler (Matlock & Reese)
 K_linha = kh_global * B
 lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25
 z_vals = np.linspace(0, comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1, 100)
@@ -191,13 +198,11 @@ with col_dir:
     c1.metric("Carga Adm. Total (Rc Adm)", f"{Q_adm:,.2f} kN")
     c2.metric("Carga Atuante (Pilar)", f"{carga_V:,.2f} kN")
     st.info(f"Status Geotécnico: {'✅ OK' if carga_V <= Q_adm else '❌ FALHA'}")
-    st.markdown("---")
     
     st.markdown("**2. Coeficientes de Recalque (Molas)**")
     m1, m2 = st.columns(2)
     m1.metric("k_v (Vertical Global)", f"{kv_global:,.0f} kN/m³")
     m2.metric("k_h (Horizontal Médio)", f"{kh_global:,.0f} kN/m³")
-    st.markdown("---")
 
     st.markdown("**3. Resistência Estrutural à Flexão**")
     f1, f2 = st.columns(2)
@@ -208,6 +213,54 @@ with col_dir:
     h1.metric("Força Horiz. Máx (H_Rd)", f"{H_rd:.1f} kN")
     h2.metric("Deslocamento de Topo", f"{deslocamento_max_mm:.2f} mm")
     st.info(f"Status Estrutural: {'✅ OK' if momento_max_atuante <= M_rd else '❌ FALHA'}")
+
+    st.markdown("---")
+    st.markdown("**4. Detalhamento da Seção (Barras de Φ 10.0 mm)**")
+    
+    # Renderizando o desenho da seção com matplotlib
+    fig_sec, ax_sec = plt.subplots(figsize=(3, 3))
+    cobrimento = 0.04 # 4 cm de cobrimento padrão
+    
+    if secao == "Circular":
+        R = B / 2
+        Rs = R - cobrimento
+        ax_sec.add_patch(plt.Circle((0, 0), R, color='#E0E0E0', ec='black', lw=1.5))
+        ax_sec.add_patch(plt.Circle((0, 0), Rs, color='none', ec='black', lw=1, ls='--'))
+        
+        theta = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
+        ax_sec.plot(Rs * np.cos(theta), Rs * np.sin(theta), 'ro', markersize=7, markeredgecolor='darkred')
+        
+    else: # Quadrada
+        L = B / 2
+        Ls = L - cobrimento
+        ax_sec.add_patch(plt.Rectangle((-L, -L), B, B, color='#E0E0E0', ec='black', lw=1.5))
+        ax_sec.add_patch(plt.Rectangle((-Ls, -Ls), B - 2*cobrimento, B - 2*cobrimento, fill=False, ec='black', lw=1, ls='--'))
+        
+        x_bars, y_bars = [], []
+        n_per_side = n_barras // 4
+        corners_x, corners_y = [-Ls, Ls, Ls, -Ls], [Ls, Ls, -Ls, -Ls]
+        for i in range(4):
+            x1, y1 = corners_x[i], corners_y[i]
+            x2, y2 = corners_x[(i+1)%4], corners_y[(i+1)%4]
+            for j in range(n_per_side):
+                f = j / n_per_side
+                x_bars.append(x1 + f * (x2 - x1))
+                y_bars.append(y1 + f * (y2 - y1))
+        ax_sec.plot(x_bars, y_bars, 'ro', markersize=7, markeredgecolor='darkred')
+
+    ax_sec.set_xlim(-B/2 - 0.05, B/2 + 0.05)
+    ax_sec.set_ylim(-B/2 - 0.05, B/2 + 0.05)
+    ax_sec.set_aspect('equal')
+    ax_sec.axis('off')
+    
+    col_info, col_img = st.columns([1, 1.2])
+    with col_info:
+        st.write(f"**Geometria:**\n{secao}")
+        st.write(f"**Dimensão:**\n{B*100:.0f} cm")
+        st.write(f"**Armadura Adotada:**\n**{n_barras} Φ 10.0 mm**")
+        st.write(f"**$A_{{s,real}}$:**\n{A_s_real*10000:.2f} cm²")
+    with col_img:
+        st.pyplot(fig_sec)
 
 # -----------------------------------------------------------------------------
 # TABELA DETALHADA UNIFICADA (AOKI-VELLOSO + MOLAS)
