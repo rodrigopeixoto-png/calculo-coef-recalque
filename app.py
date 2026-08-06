@@ -507,6 +507,7 @@ def gerar_pdf():
     data_res = [
         [Paragraph("<b>Capacidade Geotécnica (Q_adm)</b>", body_style), Paragraph(f"<b>{Q_adm:,.2f} kN</b> (Status: {'OK' if carga_V <= Q_adm else 'FALHA'})", body_style)],
         [Paragraph("<b>Capacidade Estrutural à Flexão (M_Rd)</b>", body_style), Paragraph(f"<b>{M_rd:.1f} kN.m</b> vs M_max = <b>{momento_max_atuante:.1f} kN.m</b>", body_style)],
+        [Paragraph("<b>Força Horizontal (H_Rd) e Deslocamento</b>", body_style), Paragraph(f"H_Rd = <b>{H_rd:.1f} kN</b> | Desloc. = <b>{deslocamento_max_mm:.2f} mm</b>", body_style)],
         [Paragraph("<b>Detalhamento da Armadura</b>", body_style), Paragraph(f"Gaiola: <b>{L_armadura:.2f} m</b> | Long: <b>{n_barras} Φ {bitola:.1f} mm</b> | Estribo: <b>Φ 6.3 c/ 15cm</b>", body_style)],
         [Paragraph("<b>Quantitativos (Concreto e Aço)</b>", body_style), Paragraph(f"Vol. Conc.: <b>{V_concreto:.2f} m³</b> | Peso Aço: <b>{peso_aco_total:.1f} kg</b> (Taxa: {taxa_aco_kg_m3:.1f} kg/m³)", body_style)]
     ]
