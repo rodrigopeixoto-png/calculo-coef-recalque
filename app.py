@@ -288,7 +288,7 @@ with col_dir:
     m1.metric("k_v (Vertical Global)", f"{kv_global:,.0f} kN/m³")
     m2.metric("k_h (Horizontal Médio)", f"{kh_global:,.0f} kN/m³")
 
- st.markdown("**3. Resistência Estrutural à Flexão**")
+    st.markdown("**3. Resistência Estrutural à Flexão**")
     f1, f2 = st.columns(2)
     f1.metric("Momento Resistente (M_Rd)", f"{M_rd:.1f} kN.m")
     f2.metric("Momento Máx Atuante", f"{momento_max_atuante:.1f} kN.m")
@@ -296,7 +296,6 @@ with col_dir:
     h1, h2 = st.columns(2)
     h1.metric("Força Horiz. Máx (H_Rd)", f"{H_rd:.1f} kN")
     h2.metric("Deslocamento de Topo", f"{deslocamento_max_mm:.2f} mm")
-    
     st.info(f"Status Estrutural: {'✅ OK' if momento_max_atuante <= M_rd else '❌ FALHA'}")
 
     st.markdown("---")
@@ -320,14 +319,14 @@ with col_dir:
             R = B / 2
             Rs = R - cobrimento
             ax_sec.add_patch(plt.Circle((0, 0), R, color='#E0E0E0', ec='black', lw=1.5))
-            ax_sec.add_patch(plt.Circle((0, 0), Rs, color='none', ec='black', lw=1.5, ls='--')) # Estribo
+            ax_sec.add_patch(plt.Circle((0, 0), Rs, color='none', ec='black', lw=1.5, ls='--')) 
             theta = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
             ax_sec.plot(Rs * np.cos(theta), Rs * np.sin(theta), 'ro', markersize=6, markeredgecolor='darkred')
         else:
             L = B / 2
             Ls = L - cobrimento
             ax_sec.add_patch(plt.Rectangle((-L, -L), B, B, color='#E0E0E0', ec='black', lw=1.5))
-            ax_sec.add_patch(plt.Rectangle((-Ls, -Ls), B - 2*cobrimento, B - 2*cobrimento, fill=False, ec='black', lw=1.5, ls='--')) # Estribo
+            ax_sec.add_patch(plt.Rectangle((-Ls, -Ls), B - 2*cobrimento, B - 2*cobrimento, fill=False, ec='black', lw=1.5, ls='--')) 
             x_bars, y_bars = [], []
             n_per_side = n_barras // 4
             corners_x, corners_y = [-Ls, Ls, Ls, -Ls], [Ls, Ls, -Ls, -Ls]
