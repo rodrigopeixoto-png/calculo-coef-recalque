@@ -2,6 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import io
+
+# Imports do ReportLab para geração do PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # -----------------------------------------------------------------------------
 # DICIONÁRIO GEOTÉCNICO DE SOLOS (Parâmetros exatos Aoki-Velloso e Molas)
@@ -36,7 +43,7 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
 st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
-st.caption("Verificação Geotécnica, Esforços (Winkler) e Comprimento de Armação (NBR 6118 / NBR 6122)")
+st.caption("Verificação Geotécnica, Nível d'Água, Esforços (Winkler) e Armação (NBR 6118 / 6122)")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - PARÂMETROS
@@ -54,6 +61,11 @@ B = st.sidebar.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.30
 cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value=0.0, value=0.0, step=0.5)
 comprimento_estaca = st.sidebar.number_input("Comprimento da Estaca (m)", min_value=1.0, value=15.0, step=0.5) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 nu = st.sidebar.slider("Coeficiente de Poisson (v)", min_value=0.1, max_value=0.5, value=0.35, step=0.01)
+
+st.sidebar.markdown("---")
+st.sidebar.header("💧 Condições do Lençol Freático")
+tem_na = st.sidebar.checkbox("Considerar Nível d'Água (N.A.)?", value=False)
+nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, value=3.0, step=0.5) if tem_na else 999.0
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
@@ -118,14 +130,19 @@ f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
 def processar_solo(row):
     solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
     n = row["N_corr"]
-    es = solo["alpha_k"] * n
-    k1 = 1200 * n
+    prof = row["Profundidade (m)"]
+    
+    fator_agua = 0.5 if (prof >= nivel_agua and solo["comportamento"] == "granular") else 1.0
+    
+    es = solo["alpha_k"] * n * fator_agua
+    k1 = 1200 * n * fator_agua
     kv = k1 * (0.3 / B) if solo["comportamento"] == "coesivo" else k1 * ((B + 0.3) / (2 * B)) ** 2
     kh = kv * nu
     
     rl = (solo["aoki_alpha"] * solo["aoki_K"] * n) / f2
     rp = (solo["aoki_K"] * row["N_Aoki"]) / f1 * Area_c
     delta_rl = rl * Perimetro * 1.0 
+    
     return pd.Series([es, kv, kh, rl, rp, delta_rl])
 
 df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)"]] = df_spt.apply(processar_solo, axis=1)
@@ -157,8 +174,7 @@ Q_adm = df_inf.iloc[-1]["Rc Adm (kN)"] if not df_inf.empty else 0
 N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4) 
 fyd = (fyk / 1.15) * 1000
 
-# Arredondamento da Armadura (Bitola 10mm)
-area_barra_10mm = (np.pi * (0.010)**2) / 4  # m²
+area_barra_10mm = (np.pi * (0.010)**2) / 4  
 A_s_teorico = (taxa_armadura / 100) * Area_c
 n_raw = A_s_teorico / area_barra_10mm
 frac = n_raw - np.floor(n_raw)
@@ -175,7 +191,6 @@ A_s_real = n_barras * area_barra_10mm
 braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
 M_rd = A_s_real * fyd * braco_alavanca 
 
-# Solução de Winkler (Matlock & Reese)
 K_linha = kh_global * B
 lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25
 z_vals = np.linspace(0, comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1, 200)
@@ -192,29 +207,21 @@ H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
 # -----------------------------------------------------------------------------
 # DEDUZINDO O COMPRIMENTO DA ARMADURA (NBR 6118 / NBR 6122)
 # -----------------------------------------------------------------------------
-# 1. Momento de Fissuração (M_cr) - Concreto com Carga Axial Favorável
-f_ctk_inf = 0.21 * (fck ** (2/3)) * 1000 # Resistência à tração em kPa
-W_c = Inercia_c / (B / 2) # Módulo Resistente Elástico m3
+f_ctk_inf = 0.21 * (fck ** (2/3)) * 1000 
+W_c = Inercia_c / (B / 2) 
 alpha_flexao = 1.5 if secao == "Quadrada" else 1.2
-# M_cr = Momento Resistente do concreto simples à tração somado ao benefício da compressão do pilar
 M_cr = W_c * (alpha_flexao * f_ctk_inf + (carga_V / Area_c)) 
 
 idx_max_m = np.argmax(np.abs(m_flet))
 m_apos_max = np.abs(m_flet[idx_max_m:])
 z_apos_max = z_vals[idx_max_m:]
 
-# 2. Encontra onde o momento cai abaixo do M_cr (solo/concreto já seguram sozinhos)
 idx_nulo = np.where(m_apos_max <= M_cr)[0]
 z_momento_nulo = z_apos_max[idx_nulo[0]] if len(idx_nulo) > 0 else comprimento_estaca
 
-# 3. Comprimento de Ancoragem Lb (aprox. 40 * phi = 0.40m)
 L_b = 0.40 
 L_flexao_necessario = z_momento_nulo + L_b
-
-# 4. Comprimento Mínimo Normativo da NBR 6122 (Máx entre 3.0m e 5*B)
 L_min_norma = max(3.0, 5 * B)
-
-# 5. Comprimento final adotado para a gaiola de armadura
 L_armadura = min(comprimento_estaca, max(L_min_norma, L_flexao_necessario)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 
 # -----------------------------------------------------------------------------
@@ -255,7 +262,6 @@ with col_dir:
         st.write(f"**Momento Fissuração ($M_{{cr}}$):** {M_cr:.1f} kN.m")
         st.write(f"**Profundidade do $M_{{cr}}$:** {z_momento_nulo:.2f} m")
         st.write(f"**Gaiola Final Adotada ($L_{{arm}}$):** **{L_armadura:.2f} m**")
-        st.caption(f"*Nota: O comprimento adotado respeita o mínimo da norma NBR 6122 ({L_min_norma:.2f}m) garantindo ancoragem das tensões de flexão.*")
 
     with col_img:
         fig_sec, ax_sec = plt.subplots(figsize=(2.8, 2.8))
@@ -295,7 +301,6 @@ with col_dir:
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("📋 Discretização Metro a Metro (Aoki-Velloso e Molas)")
-st.caption("Tabela completa com o cálculo cumulativo de resistência por atrito/ponta e os coeficientes de recalque k_v e k_h para lançamento estrutural. Nota: O solo tipo 'Aterro' não contribui para a capacidade de carga.")
 
 df_export_completo = df_inf[[
     "Profundidade (m)", "Tipo de Solo", "N_SPT", 
@@ -323,11 +328,16 @@ st.markdown("---")
 st.subheader("📈 Diagramas Geotécnicos, Esforços e Elevação da Armadura")
 
 if tipo_fundacao == "Profunda (Estaca)":
-    fig, (ax_cap, ax0, ax1, ax2, ax_elev) = plt.subplots(1, 5, figsize=(25, 5.5))
+    fig_graficos, (ax_cap, ax0, ax1, ax2, ax_elev) = plt.subplots(1, 5, figsize=(25, 5.5))
     
+    def plota_na(ax, c_len):
+        if tem_na and nivel_agua <= c_len:
+            ax.axhline(y=nivel_agua, color='blue', linestyle='-.', lw=1.2, alpha=0.6, label="N.A.")
+
     # 0. Capacidade de Carga vs Profundidade
     ax_cap.plot(df_export_completo["Rc Adm (kN)"], df_export_completo["Profundidade (m)"], label="Carga Admissível", marker="D", color="green")
     ax_cap.axvline(x=carga_V, color='red', linestyle='--', label="Carga Atuante")
+    plota_na(ax_cap, df_export_completo["Profundidade (m)"].max())
     ax_cap.invert_yaxis()
     ax_cap.set_xlabel("Capacidade Admissível (kN)")
     ax_cap.set_ylabel("Profundidade (m)")
@@ -339,6 +349,7 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax0.plot(df_spt["kh (kN/m³)"], df_spt["Profundidade (m)"], label="k_h Horizontal", marker="o", color="#1f77b4")
     ax0.plot(df_spt["kv (kN/m³)"], df_spt["Profundidade (m)"], label="k_v Vertical", marker="s", color="#ff7f0e")
     ax0.axhspan(cota_assentamento, cota_fim, color='yellow', alpha=0.2, label="Trecho da Estaca")
+    plota_na(ax0, df_spt["Profundidade (m)"].max())
     ax0.invert_yaxis()
     ax0.set_xlabel("Módulo de Recalque (kN/m³)")
     ax0.set_title("Perfil Geotécnico de Molas")
@@ -351,6 +362,7 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax1.axvline(x=M_cr, color='green', linestyle=':', label="Fissuração M_cr")
     ax1.axvline(x=M_rd, color='darkred', linestyle='--', label="Limite M_Rd")
     ax1.axvline(x=-M_rd, color='darkred', linestyle='--')
+    plota_na(ax1, comprimento_estaca)
     ax1.invert_yaxis()
     ax1.set_xlabel("Momento Fletor (kN.m)")
     ax1.set_title("Diagrama de Momento Fletor")
@@ -360,18 +372,22 @@ if tipo_fundacao == "Profunda (Estaca)":
     # 3. Diagrama de Deslocamentos
     ax2.plot(y_disp * 1000, z_vals, color="blue", linewidth=2, label="Deslocamento")
     ax2.fill_betweenx(z_vals, 0, y_disp * 1000, color="blue", alpha=0.2)
+    plota_na(ax2, comprimento_estaca)
     ax2.invert_yaxis()
     ax2.set_xlabel("Deslocamento (mm)")
     ax2.set_title("Elástica da Estaca")
     ax2.grid(True, linestyle="--", alpha=0.6)
 
-    # 4. Desenho da Elevação da Estaca e Comprimento da Gaiola de Armadura
+    # 4. Desenho da Elevação da Estaca, Gaiola de Armadura e Água
     ax_elev.plot([-B/2, -B/2], [0, comprimento_estaca], color='grey', lw=2)
     ax_elev.plot([B/2, B/2], [0, comprimento_estaca], color='grey', lw=2)
     ax_elev.plot([-B/2, B/2], [comprimento_estaca, comprimento_estaca], color='grey', lw=2)
     ax_elev.plot([-B/2*1.5, B/2*1.5], [0, 0], color='black', lw=3, label="Topo da Estaca")
     
-    # Desenho da Armadura (Gaiola em vermelho)
+    if tem_na and nivel_agua <= comprimento_estaca:
+        ax_elev.axhline(y=nivel_agua, color='blue', linestyle='-.', lw=2, label="N.A.")
+        ax_elev.fill_betweenx([nivel_agua, comprimento_estaca * 1.05], -B*1.2, B*1.2, color='blue', alpha=0.08)
+
     r_arm = B/2 - 0.04
     ax_elev.plot([-r_arm, -r_arm], [0, L_armadura], color='red', lw=2.5, label=f"Gaiola L_arm = {L_armadura:.2f}m")
     ax_elev.plot([r_arm, r_arm], [0, L_armadura], color='red', lw=2.5)
@@ -381,8 +397,167 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax_elev.set_ylim(0, comprimento_estaca * 1.05)
     ax_elev.invert_yaxis()
     ax_elev.set_ylabel("Profundidade (m)")
-    ax_elev.set_title("Perfil da Armadura (Elevação)")
+    ax_elev.set_title("Perfil e N.A. (Elevação)")
     ax_elev.grid(True, linestyle="--", alpha=0.4)
     ax_elev.legend(loc="lower right")
 
-    st.pyplot(fig)
+    st.pyplot(fig_graficos)
+
+# -----------------------------------------------------------------------------
+# FUNÇÃO PARA GERAR O RELATÓRIO PDF EM MEMÓRIA (REPORTLAB)
+# -----------------------------------------------------------------------------
+def gerar_pdf():
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        pdf_buffer, 
+        pagesize=A4, 
+        rightMargin=30, 
+        leftMargin=30, 
+        topMargin=30, 
+        bottomMargin=30
+    )
+    story = []
+    styles = getSampleStyleSheet()
+
+    # Estilos Customizados
+    title_style = ParagraphStyle(
+        'PDFTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor('#1E3A8A'),
+        alignment=1, # Center
+        spaceAfter=15
+    )
+    
+    h2_style = ParagraphStyle(
+        'PDFH2',
+        parent=styles['Heading2'],
+        fontSize=12,
+        leading=16,
+        textColor=colors.HexColor('#1E3A8A'),
+        spaceBefore=10,
+        spaceAfter=5
+    )
+
+    body_style = ParagraphStyle(
+        'PDFBody',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=12
+    )
+
+    # 1. Cabeçalho
+    story.append(Paragraph("<b>MEMORIAL DE CÁLCULO DE FUNDAÇÕES</b>", title_style))
+    story.append(Paragraph("<b>Integração Solo-Estrutura & Verificação Geotécnica / Estrutural</b>", ParagraphStyle('Sub', parent=body_style, alignment=1, fontSize=10, leading=14)))
+    story.append(Spacer(1, 15))
+
+    # 2. Tabela de Parâmetros de Entrada
+    story.append(Paragraph("<b>1. Parâmetros Gerais e Solicitações</b>", h2_style))
+    data_input = [
+        [Paragraph("<b>Fundação:</b>", body_style), Paragraph(f"{tipo_fundacao} ({metodo_construtivo})", body_style),
+         Paragraph("<b>Carga Vertical (V):</b>", body_style), Paragraph(f"{carga_V:.1f} kN", body_style)],
+        [Paragraph("<b>Geometria:</b>", body_style), Paragraph(f"{secao} - B = {B*100:.0f} cm", body_style),
+         Paragraph("<b>Força Horizontal (H):</b>", body_style), Paragraph(f"{carga_H:.1f} kN", body_style)],
+        [Paragraph("<b>Comprimento:</b>", body_style), Paragraph(f"{comprimento_estaca:.1f} m", body_style),
+         Paragraph("<b>Momento Fletor (M):</b>", body_style), Paragraph(f"{carga_M:.1f} kN.m", body_style)],
+        [Paragraph("<b>Material:</b>", body_style), Paragraph(f"fck = {fck:.0f} MPa | fyk = {fyk:.0f} MPa", body_style),
+         Paragraph("<b>Nível d'Água (N.A.):</b>", body_style), Paragraph(f"{'Prof: ' + str(nivel_agua) + 'm' if tem_na else 'Ausente'}", body_style)]
+    ]
+    t_input = Table(data_input, colWidths=[90, 170, 110, 160])
+    t_input.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F3F4F6')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+    ]))
+    story.append(t_input)
+    story.append(Spacer(1, 10))
+
+    # 3. Resumo dos Resultados
+    story.append(Paragraph("<b>2. Resumo dos Resultados Obtidos</b>", h2_style))
+    data_res = [
+        [Paragraph("<b>Verificação Geotécnica (Aoki-Velloso)</b>", body_style), Paragraph(f"Q_adm = <b>{Q_adm:,.2f} kN</b> (Status: {'OK' if carga_V <= Q_adm else 'FALHA'})", body_style)],
+        [Paragraph("<b>Coeficiente Recalque Vertical Global (k_v)</b>", body_style), Paragraph(f"k_v = <b>{kv_global:,.0f} kN/m³</b> ({kv_global/10000:.4f} kgf/cm³)", body_style)],
+        [Paragraph("<b>Coeficiente Recalque Horizontal Médio (k_h)</b>", body_style), Paragraph(f"k_h = <b>{kh_global:,.0f} kN/m³</b> ({kh_global/10000:.4f} kgf/cm³)", body_style)],
+        [Paragraph("<b>Capacidade Estrutural à Flexão (M_Rd)</b>", body_style), Paragraph(f"M_Rd = <b>{M_rd:.1f} kN.m</b> vs M_max = <b>{momento_max_atuante:.1f} kN.m</b>", body_style)],
+        [Paragraph("<b>Força Horizontal Resistente (H_Rd)</b>", body_style), Paragraph(f"H_Rd = <b>{H_rd:.1f} kN</b> (Deslocamento Topo = <b>{deslocamento_max_mm:.2f} mm</b>)", body_style)],
+        [Paragraph("<b>Detalhamento da Armadura</b>", body_style), Paragraph(f"Adotado <b>{n_barras} Φ 10.0 mm</b> (As = {A_s_real*10000:.2f} cm²)", body_style)],
+        [Paragraph("<b>Comprimento da Gaiola de Armação (L_arm)</b>", body_style), Paragraph(f"L_arm = <b>{L_armadura:.2f} m</b> (NBR 6122 / NBR 6118)", body_style)]
+    ]
+    t_res = Table(data_res, colWidths=[200, 330])
+    t_res.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#9CA3AF')),
+        ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#E5E7EB')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+    ]))
+    story.append(t_res)
+    story.append(Spacer(1, 15))
+
+    # 4. Imagem do Detalhamento da Seção
+    buf_sec = io.BytesIO()
+    fig_sec.savefig(buf_sec, format='png', dpi=200, bbox_inches='tight')
+    buf_sec.seek(0)
+    story.append(Paragraph("<b>3. Seção Transversal e Armadura</b>", h2_style))
+    story.append(Image(buf_sec, width=150, height=150))
+    story.append(Spacer(1, 10))
+
+    # Quebra de Página para os Gráficos Principais e Tabela Metro a Metro
+    story.append(PageBreak())
+
+    # 5. Gráficos Combinados
+    story.append(Paragraph("<b>4. Diagramas Geotécnicos, Esforços e Elevação</b>", h2_style))
+    buf_graf = io.BytesIO()
+    fig_graficos.savefig(buf_graf, format='png', dpi=200, bbox_inches='tight')
+    buf_graf.seek(0)
+    story.append(Image(buf_graf, width=530, height=125))
+    story.append(Spacer(1, 15))
+
+    # 6. Tabela Metro a Metro (Limitada a 15 linhas no PDF para caber perfeitamente)
+    story.append(Paragraph("<b>5. Discretização Metro a Metro (Aoki-Velloso & Winkler)</b>", h2_style))
+    data_tab = [["Prof(m)", "Solo", "N_SPT", "k_v (kN/m³)", "k_h (kN/m³)", "r_l (kPa)", "R_p (kN)", "R_c Adm (kN)"]]
+    for idx, r in df_export_completo.head(15).iterrows():
+        data_tab.append([
+            f"{r['Profundidade (m)']:.0f}",
+            str(r['Tipo de Solo'])[:12],
+            f"{r['N_SPT']:.0f}",
+            f"{r['kv (kN/m³)']:,.0f}",
+            f"{r['kh (kN/m³)']:,.0f}",
+            f"{r['rl (kPa)']:.1f}",
+            f"{r['Rp (kN)']:.1f}",
+            f"{r['Rc Adm (kN)']:.1f}"
+        ])
+    t_m = Table(data_tab, colWidths=[40, 80, 45, 75, 75, 60, 60, 95])
+    t_m.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 3),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+    ]))
+    story.append(t_m)
+
+    doc.build(story)
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
+
+# -----------------------------------------------------------------------------
+# BOTÃO DE DOWNLOAD DO PDF NO PAINEL DIREITO
+# -----------------------------------------------------------------------------
+with col_dir:
+    st.markdown("---")
+    pdf_bytes = gerar_pdf()
+    st.download_button(
+        label="📄 Baixar Memorial de Cálculo em PDF",
+        data=pdf_bytes,
+        file_name=f"Memorial_Calculo_Estaca_B{B*100:.0f}cm.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
