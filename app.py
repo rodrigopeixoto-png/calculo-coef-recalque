@@ -159,7 +159,7 @@ else:
     df_inf["Rc Adm (kN)"] = 0
 
 # -----------------------------------------------------------------------------
-# CÁLCULOS GLOBAIS ESTRUTURAIS E DETALHAMENTO DE ARMADURA
+# CÁLCULOS GLOBAIS ESTRUTURAIS E ESFORÇOS (Winkler)
 # -----------------------------------------------------------------------------
 kh_global = df_inf["kh (kN/m³)"].mean()
 
@@ -174,23 +174,6 @@ Q_adm = df_inf.iloc[-1]["Rc Adm (kN)"] if not df_inf.empty else 0
 N_d_max = Area_c * ((0.85 * fck * 1000) / 1.4) 
 fyd = (fyk / 1.15) * 1000
 
-area_barra_10mm = (np.pi * (0.010)**2) / 4  
-A_s_teorico = (taxa_armadura / 100) * Area_c
-n_raw = A_s_teorico / area_barra_10mm
-frac = n_raw - np.floor(n_raw)
-
-n_barras = int(np.floor(n_raw)) if frac < 0.5 else int(np.ceil(n_raw))
-n_barras = max(n_barras, 6)
-
-if secao == "Quadrada":
-    if n_barras % 4 != 0:
-        n_barras += (4 - n_barras % 4)
-    n_barras = max(n_barras, 8)
-
-A_s_real = n_barras * area_barra_10mm
-braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
-M_rd = A_s_real * fyd * braco_alavanca 
-
 K_linha = kh_global * B
 lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25
 z_vals = np.linspace(0, comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1, 200)
@@ -202,7 +185,6 @@ deslocamento_max_mm = np.max(np.abs(y_disp)) * 1000 if len(y_disp) > 0 else 0
 
 m_flet_unit = (np.exp(-lamb * z_vals) / lamb) * (1.0 * np.sin(lamb * z_vals))
 momento_max_unit = np.max(np.max(np.abs(m_flet_unit)))
-H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
 
 # -----------------------------------------------------------------------------
 # DEDUZINDO O COMPRIMENTO DA ARMADURA (NBR 6118 / NBR 6122)
@@ -222,7 +204,53 @@ z_momento_nulo = z_apos_max[idx_nulo[0]] if len(idx_nulo) > 0 else comprimento_e
 L_b = 0.40 
 L_flexao_necessario = z_momento_nulo + L_b
 L_min_norma = max(3.0, 5 * B)
-L_armadura = min(comprimento_estaca, max(L_min_norma, L_flexao_necessario)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
+L_armadura_calc = min(comprimento_estaca, max(L_min_norma, L_flexao_necessario)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
+
+# -----------------------------------------------------------------------------
+# SIDEBAR - NOVO PAINEL DE DETALHAMENTO (BITOLA E COMPRIMENTO MANUAL)
+# -----------------------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.header("🔧 Detalhamento da Armadura")
+
+bitola = st.sidebar.selectbox("Bitola Longitudinal (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
+
+override_l = st.sidebar.checkbox("Ajustar Comprimento Manualmente?", value=False)
+if override_l:
+    limite_minimo = float(L_armadura_calc)
+    limite_maximo = float(comprimento_estaca) if comprimento_estaca > L_armadura_calc else limite_minimo
+    valor_sugerido = min(np.ceil(L_armadura_calc * 2) / 2, limite_maximo) # Arredonda para meio metro
+    
+    L_armadura = st.sidebar.number_input(
+        "Comprimento da Gaiola (m)", 
+        min_value=limite_minimo, 
+        max_value=limite_maximo, 
+        value=float(valor_sugerido), 
+        step=0.5
+    )
+else:
+    L_armadura = L_armadura_calc
+    st.sidebar.info(f"Comprimento automático (Norma): {L_armadura_calc:.2f} m")
+
+# -----------------------------------------------------------------------------
+# CÁLCULO DA RESISTÊNCIA ESTRUTURAL M_Rd e H_Rd (Com a Bitola Selecionada)
+# -----------------------------------------------------------------------------
+area_barra = (np.pi * (bitola / 1000)**2) / 4  
+A_s_teorico = (taxa_armadura / 100) * Area_c
+n_raw = A_s_teorico / area_barra
+frac = n_raw - np.floor(n_raw)
+
+n_barras = int(np.floor(n_raw)) if frac < 0.5 else int(np.ceil(n_raw))
+n_barras = max(n_barras, 6)
+
+if secao == "Quadrada":
+    if n_barras % 4 != 0:
+        n_barras += (4 - n_barras % 4)
+    n_barras = max(n_barras, 8)
+
+A_s_real = n_barras * area_barra
+braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
+M_rd = A_s_real * fyd * braco_alavanca 
+H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
 
 # -----------------------------------------------------------------------------
 # PAINEL DE RESULTADOS (COLUNA DIREITA)
@@ -257,11 +285,15 @@ with col_dir:
     col_info, col_img = st.columns([1.1, 1])
     with col_info:
         st.write(f"**Geometria:** {secao} ({B*100:.0f} cm)")
-        st.write(f"**Armadura Adotada:** **{n_barras} Φ 10.0 mm**")
+        st.write(f"**Armadura Adotada:** **{n_barras} Φ {bitola:.1f} mm**")
         st.write(f"**Área de Aço $A_s$:** {A_s_real*10000:.2f} cm²")
         st.write(f"**Momento Fissuração ($M_{{cr}}$):** {M_cr:.1f} kN.m")
         st.write(f"**Profundidade do $M_{{cr}}$:** {z_momento_nulo:.2f} m")
         st.write(f"**Gaiola Final Adotada ($L_{{arm}}$):** **{L_armadura:.2f} m**")
+        if override_l:
+            st.caption("*Nota: O comprimento da armadura foi definido manualmente pelo projetista.*")
+        else:
+            st.caption(f"*Nota: O comprimento adotado respeita o mínimo da norma NBR 6122 ({L_min_norma:.2f}m) garantindo ancoragem.*")
 
     with col_img:
         fig_sec, ax_sec = plt.subplots(figsize=(2.8, 2.8))
@@ -483,7 +515,7 @@ def gerar_pdf():
         [Paragraph("<b>Coeficiente Recalque Horizontal Médio (k_h)</b>", body_style), Paragraph(f"k_h = <b>{kh_global:,.0f} kN/m³</b> ({kh_global/10000:.4f} kgf/cm³)", body_style)],
         [Paragraph("<b>Capacidade Estrutural à Flexão (M_Rd)</b>", body_style), Paragraph(f"M_Rd = <b>{M_rd:.1f} kN.m</b> vs M_max = <b>{momento_max_atuante:.1f} kN.m</b>", body_style)],
         [Paragraph("<b>Força Horizontal Resistente (H_Rd)</b>", body_style), Paragraph(f"H_Rd = <b>{H_rd:.1f} kN</b> (Deslocamento Topo = <b>{deslocamento_max_mm:.2f} mm</b>)", body_style)],
-        [Paragraph("<b>Detalhamento da Armadura</b>", body_style), Paragraph(f"Adotado <b>{n_barras} Φ 10.0 mm</b> (As = {A_s_real*10000:.2f} cm²)", body_style)],
+        [Paragraph("<b>Detalhamento da Armadura</b>", body_style), Paragraph(f"Adotado <b>{n_barras} Φ {bitola:.1f} mm</b> (As = {A_s_real*10000:.2f} cm²)", body_style)],
         [Paragraph("<b>Comprimento da Gaiola de Armação (L_arm)</b>", body_style), Paragraph(f"L_arm = <b>{L_armadura:.2f} m</b> (NBR 6122 / NBR 6118)", body_style)]
     ]
     t_res = Table(data_res, colWidths=[200, 330])
