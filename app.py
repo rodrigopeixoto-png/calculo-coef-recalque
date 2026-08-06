@@ -288,10 +288,15 @@ with col_dir:
     m1.metric("k_v (Vertical Global)", f"{kv_global:,.0f} kN/m³")
     m2.metric("k_h (Horizontal Médio)", f"{kh_global:,.0f} kN/m³")
 
-    st.markdown("**3. Resistência Estrutural à Flexão**")
+ st.markdown("**3. Resistência Estrutural à Flexão**")
     f1, f2 = st.columns(2)
     f1.metric("Momento Resistente (M_Rd)", f"{M_rd:.1f} kN.m")
     f2.metric("Momento Máx Atuante", f"{momento_max_atuante:.1f} kN.m")
+    
+    h1, h2 = st.columns(2)
+    h1.metric("Força Horiz. Máx (H_Rd)", f"{H_rd:.1f} kN")
+    h2.metric("Deslocamento de Topo", f"{deslocamento_max_mm:.2f} mm")
+    
     st.info(f"Status Estrutural: {'✅ OK' if momento_max_atuante <= M_rd else '❌ FALHA'}")
 
     st.markdown("---")
