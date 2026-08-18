@@ -84,7 +84,7 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT E LEITOR DE PDF INTELIGENTE (MULTI-FUROS)
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF (SIMPLES - UM FURO POR VEZ)
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
@@ -92,6 +92,7 @@ with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
     
     # --- MOTOR DE LEITURA DO PDF ---
+    st.info("💡 Dica: Envie arquivos contendo **apenas 1 furo de sondagem** por vez para evitar cruzamento de dados.")
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
     if arquivo_pdf is not None:
@@ -104,147 +105,40 @@ with col_esq:
                             txt = page.extract_text()
                             if txt: texto_completo += txt + "\n"
 
-                    # Fatia o documento em blocos baseados nos nomes dos furos
-                    pedacos = re.split(r'(Furo\s*[A-Z\d\-]+|SP\s*-\s*\d+)', texto_completo, flags=re.IGNORECASE)
-                    
-                    furos_encontrados = {}
-                    
-                    def extrair_tabela(texto_furo):
-                        linhas = texto_furo.split('\n')
-                        dict_spt = {}
-                        last_seen_tokens = [] # Guarda os números caso o nome do solo pule para a linha de baixo
+                    # Heurística de Leitura Original (Procura linhas com: Profundidade + SPT + Solo)
+                    padrao = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                    achados = padrao.findall(texto_completo)
+
+                    linhas_spt = []
+                    for prof, n_spt, solo_desc in achados:
+                        solo_limpo = solo_desc.strip().title()
                         
-                        for linha in linhas:
-                            linha_lower = linha.lower()
-                            tokens = linha.split()
-                            
-                            # 1. Busca por nome de solo
-                            match_solo = re.search(r'\b(argila|silte|areia|aterro|solo)\b', linha_lower)
-                            
-                            if not match_solo:
-                                # Se não tem solo, mas tem número, guardamos na memória
-                                if any(char.isdigit() for char in linha):
-                                    last_seen_tokens = tokens
-                                continue
-                                
-                            # 2. Achou o solo! Vamos pegar os números antes dele
-                            texto_antes = linha[:match_solo.start()].strip()
-                            tokens_antes = texto_antes.split()
-                            
-                            if tokens_antes:
-                                tokens_to_use = tokens_antes
-                            else:
-                                tokens_to_use = last_seen_tokens
-                                
-                            if not tokens_to_use:
-                                continue
-                                
-                            # 3. Descobre a Profundidade (último número que aceita decimal)
-                            prof_int = None
-                            for tk in reversed(tokens_to_use):
-                                tk_clean = tk.replace(',', '.')
-                                try:
-                                    prof_float = float(tk_clean)
-                                    if 0 < prof_float <= 60:
-                                        prof_int = int(round(prof_float))
-                                        break
-                                except:
-                                    continue
-                                    
-                            if not prof_int:
-                                continue
-                                
-                            # 4. Descobre o N_SPT (último número antes da cota que NÃO tem vírgula/ponto)
-                            spt_cands = [t for t in tokens_to_use if ',' not in t and '.' not in t]
-                            if not spt_cands:
-                                continue
-                                
-                            last_spt_str = spt_cands[-1]
-                            try:
-                                if '/' in last_spt_str:
-                                    n_spt = int(last_spt_str.split('/')[0]) # Resolve as frações ex: 13/29 vira 13
-                                else:
-                                    clean_spt = re.sub(r'\D', '', last_spt_str)
-                                    n_spt = int(clean_spt) if clean_spt else 1
-                            except:
-                                continue
-                                
-                            # 5. Classifica o Solo com inteligência de aproximação
-                            trecho_solo = linha[match_solo.start():]
-                            palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho_solo)
-                            texto_curto = " ".join(palavras[:3]).title()
-                            
-                            match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
-                            solo_str = match[0] if match else "Argila"
-                            
-                            if prof_int not in dict_spt:
-                                dict_spt[prof_int] = {
-                                    "Profundidade (m)": prof_int,
-                                    "N_SPT": n_spt,
-                                    "Tipo de Solo": solo_str
-                                }
-                                
-                        if dict_spt:
-                            max_prof = max(dict_spt.keys())
-                            lista_completa = []
-                            last_spt = 1
-                            last_solo = "Argila"
-                            
-                            # Preenche de 1 até o fundo, copiando a camada de cima se houver falha na leitura
-                            for p in range(1, max_prof + 1):
-                                if p in dict_spt:
-                                    last_spt = dict_spt[p]["N_SPT"]
-                                    last_solo = dict_spt[p]["Tipo de Solo"]
-                                lista_completa.append({
-                                    "Profundidade (m)": p,
-                                    "N_SPT": last_spt,
-                                    "Tipo de Solo": last_solo
-                                })
-                            return pd.DataFrame(lista_completa)
-                        return None
+                        # INTELIGÊNCIA: Acha o solo mais parecido no dicionário
+                        match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
+                        solo_adotado = match[0] if match else "Argila"
 
-                    # Se achou furos no documento
-                    if len(pedacos) == 1:
-                        df_unico = extrair_tabela(pedacos[0])
-                        if df_unico is not None: furos_encontrados["Furo Único"] = df_unico
-                    else:
-                        df_0 = extrair_tabela(pedacos[0])
-                        if df_0 is not None and not df_0.empty: furos_encontrados["Furo Inicial"] = df_0
+                        linhas_spt.append({
+                            "Profundidade (m)": float(prof.replace(',', '.')),
+                            "N_SPT": int(n_spt),
+                            "Tipo de Solo": solo_adotado
+                        })
 
-                        for i in range(1, len(pedacos), 2):
-                            nome = pedacos[i].strip().upper()
-                            texto_furo = pedacos[i+1]
-                            df_f = extrair_tabela(texto_furo)
-                            if df_f is not None and not df_f.empty:
-                                furos_encontrados[nome] = df_f
-
-                    if furos_encontrados:
-                        st.session_state.dados_furos_pdf = furos_encontrados
-                        primeiro_furo = list(furos_encontrados.keys())[0]
-                        st.session_state.tabela_spt = furos_encontrados[primeiro_furo]
-                        st.success(f"✅ Encontrados {len(furos_encontrados)} furos válidos!")
+                    if len(linhas_spt) > 0:
+                        # Monta a tabela, remove duplicatas e força numeração de 1 em 1m
+                        df_novo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
+                        df_novo["Profundidade (m)"] = range(1, len(df_novo) + 1)
+                        
+                        st.session_state.tabela_spt = df_novo
+                        
+                        st.success("✅ Tabela extraída com sucesso!")
                         st.rerun()
                     else:
-                        st.warning("⚠️ Não consegui extrair as tabelas. Verifique a formatação do PDF.")
+                        st.warning("⚠️ Não consegui extrair a tabela. O PDF pode ter uma formatação complexa ou ser uma imagem escaneada. Preencha manualmente abaixo.")
 
                 except Exception as e:
                     st.error(f"Erro ao processar o arquivo: {e}")
-
-    # SELETOR DE FUROS (Só aparece se houver dados no Fichário da Sessão)
-    if "dados_furos_pdf" in st.session_state and st.session_state.dados_furos_pdf:
-        opcoes_furos = list(st.session_state.dados_furos_pdf.keys())
-        
-        st.markdown("##### 📌 Escolha qual furo utilizar:")
-        c_sel, c_btn = st.columns([2, 1])
-        with c_sel:
-            furo_escolhido = st.selectbox("Selecione o Furo:", opcoes_furos, label_visibility="collapsed")
-        with c_btn:
-            if st.button("Carregar Furo", width="stretch"):
-                st.session_state.tabela_spt = st.session_state.dados_furos_pdf[furo_escolhido]
-                st.rerun()
-
     st.markdown("---")
-    
+
     # 1. Cria a tabela inicial na memória se ela não existir
     if "tabela_spt" not in st.session_state:
         st.session_state.tabela_spt = pd.DataFrame({
