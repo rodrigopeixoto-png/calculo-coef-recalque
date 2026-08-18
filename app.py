@@ -117,45 +117,47 @@ with col_esq:
                             linha_lower = linha.lower()
                             
                             # 1. Filtro 1: A linha deve conter uma palavra de solo
-                            if not any(k in linha_lower for k in ['argila', 'silte', 'areia', 'aterro', 'solo']):
+                            match_solo = re.search(r'\b(argila|silte|areia|aterro|solo)\b', linha_lower)
+                            if not match_solo:
                                 continue
                             
-                            # 2. Filtro 2: Encontra a Profundidade cravada no formato X,XX ou X.XX
-                            prof_match = re.search(r'\b(\d{1,2})[,.](\d{2})\b', linha)
-                            if not prof_match:
-                                continue
+                            texto_antes = linha[:match_solo.start()]
                             
-                            prof_float = float(prof_match.group().replace(',', '.'))
-                            prof_int = int(round(prof_float))
+                            # 2. Pega todos os números antes do nome do solo (ignorando sinal negativo)
+                            nums_texto = re.findall(r'\b\d+(?:[,.]\d+)?(?:/\d+)?\b', texto_antes)
                             
-                            if prof_int < 1 or prof_int > 50:
+                            if not nums_texto or len(nums_texto) < 2:
                                 continue
                                 
-                            # 3. Pega o N_SPT: É sempre o último número válido antes da profundidade
-                            idx_prof = prof_match.start()
-                            texto_antes = linha[:idx_prof]
-                            
-                            # Captura números isolados ou a primeira parte de uma fração (ex: pega 13 de 13/29)
-                            nums_antes = re.findall(r'\b(\d{1,3})(?:/\d{1,3})?\b', texto_antes)
-                            
-                            if not nums_antes:
+                            # 3. O último número antes do texto é a Profundidade
+                            prof_str = nums_texto[-1]
+                            try:
+                                prof_float = float(prof_str.replace(',', '.'))
+                                prof_int = int(round(prof_float))
+                            except:
                                 continue
+
+                            if prof_int < 1 or prof_int > 60:
+                                continue
+
+                            # 4. Encontra o N_SPT filtrando as cotas (números com vírgula)
+                            spt_candidates = [n for n in nums_texto[:-1] if ',' not in n and '.' not in n]
                             
-                            n_spt = int(nums_antes[-1])
-                            
-                            # 4. Determina o Solo extraindo o trecho exato
-                            solo_str = "Argila"
-                            match_k = re.search(r'\b(argila|silte|areia|aterro|solo)\b.*', linha_lower)
-                            if match_k:
-                                trecho = match_k.group()
-                                # Pega as 3 primeiras palavras do solo para não confundir a inteligência
-                                palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho)
-                                texto_curto = " ".join(palavras[:3]).title()
+                            if not spt_candidates:
+                                continue
                                 
-                                match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
-                                if match:
-                                    solo_str = match[0]
+                            last_spt_str = spt_candidates[-1]
+                            # Se for penetração parcial (ex: 13/29), pega apenas o 13
+                            n_spt = int(last_spt_str.split('/')[0])
+
+                            # 5. Classifica o Solo (3 primeiras palavras para inteligência)
+                            trecho_solo = linha[match_solo.start():]
+                            palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho_solo)
+                            texto_curto = " ".join(palavras[:3]).title()
                             
+                            match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
+                            solo_str = match[0] if match else "Argila"
+
                             if prof_int not in dict_spt:
                                 dict_spt[prof_int] = {
                                     "Profundidade (m)": prof_int,
