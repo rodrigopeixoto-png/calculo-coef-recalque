@@ -4,3 +4,6 @@ numpy
 matplotlib
 reportlab
 pdfplumber
+google-generativeai
+pdf2image
+pillow
