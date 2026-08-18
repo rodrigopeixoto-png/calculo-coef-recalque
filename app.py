@@ -87,7 +87,7 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT E LEITOR DE PDF COM IA VISUAL (SELEÇÃO DE FURO)
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF COM INTELIGÊNCIA ARTIFICIAL VISUAL
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
@@ -106,7 +106,7 @@ with col_esq:
     
     if arquivo_pdf is not None:
         if not api_key:
-            st.warning("⚠️ Insira sua Chave de API do Gemini acima para habilitar o leitor visual.")
+            st.warning("⚠️ Insira sua Chave de API do Gemini no campo acima para habilitar o leitor visual.")
         else:
             if st.button("Processar Furo Selecionado com IA", width="stretch"):
                 with st.spinner(f"A IA está procurando e analisando o furo {nome_furo_desejado}..."):
@@ -123,7 +123,6 @@ with col_esq:
                         
                         lista_solos_str = ", ".join(OPCOES_SOLO)
                         
-                        # PROMPT ATUALIZADO COM SELEÇÃO DE FURO
                         prompt = f"""
                         Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
                         Analise a imagem deste laudo de sondagem.
@@ -161,7 +160,26 @@ with col_esq:
                             
                     except Exception as e:
                         st.error(f"Erro na análise visual: {e}")
-    
+    st.markdown("---")
+
+    if "tabela_spt" not in st.session_state:
+        st.session_state.tabela_spt = pd.DataFrame({
+            "Profundidade (m)": list(range(1, 16)),
+            "N_SPT": [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24],
+            "Tipo de Solo": ["Aterro", "Aterro"] + ["Argila"] * 13
+        })
+
+    df_editado = st.data_editor(
+        st.session_state.tabela_spt,
+        column_config={
+            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
+            "N_SPT": st.column_config.NumberColumn("N_SPT", min_value=1, max_value=100, step=1),
+            "Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)
+        },
+        num_rows="dynamic",
+        width="stretch"
+    )
+
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
@@ -578,15 +596,15 @@ def gerar_pdf():
     t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 8), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
     story.append(t_m)
 
-    # ANEXO: IMAGEM DO BOLETIM DE SONDAGEM (Incluso antes de compilar o PDF)
+    # ANEXO: IMAGEM DO BOLETIM DE SONDAGEM
     if "imagem_sondagem" in st.session_state and st.session_state.imagem_sondagem:
         story.append(Spacer(1, 15))
         story.append(Paragraph("<b>Anexo: Perfil do Boletim de Sondagem SPT</b>", h2_style))
         story.append(Spacer(1, 10))
 
         img_buffer = io.BytesIO(st.session_state.imagem_sondagem)
-        largura_pdf = 14 * 28.35  # 14cm em pontos
-        altura_pdf = 18 * 28.35   # 18cm em pontos
+        largura_pdf = 14 * 28.35
+        altura_pdf = 18 * 28.35
         
         img_pdf = ReportLabImage(img_buffer, width=largura_pdf, height=altura_pdf)
         img_pdf.hAlign = 'CENTER'
