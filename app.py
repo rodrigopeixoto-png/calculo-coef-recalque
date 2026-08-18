@@ -8,11 +8,11 @@ import pdfplumber
 from difflib import get_close_matches
 import google.generativeai as genai
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image as PILImage
 
 # Imports do ReportLab para geração do PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as ReportLabImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -93,15 +93,10 @@ col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    
     st.info("🤖 **Novo Leitor IA Visual:** O programa agora lê a 'foto' do laudo como um engenheiro!")
-    
-    # Link clicável direto para o Google AI Studio
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     
-    # Campo para inserir a chave de API
     api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password")
-    
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (1 Furo por vez)", type=["pdf"])
     
     if arquivo_pdf is not None:
@@ -111,25 +106,16 @@ with col_esq:
             if st.button("Processar Dados com IA Visual", width="stretch"):
                 with st.spinner("A Inteligência Artificial está analisando a imagem do laudo..."):
                     try:
-                        # 1. Configura a API do Gemini
                         genai.configure(api_key=api_key)
-                        
-                        # 2. Define EXATAMENTE o modelo mais recente exigido pelo Google
                         modelo_visao = genai.GenerativeModel('gemini-3.6-flash')
-                        
-                        # 3. Tira uma "Foto" da primeira página do PDF
-                        import fitz
-                        import PIL.Image
-                        import io
                         
                         doc = fitz.open(stream=arquivo_pdf.read(), filetype="pdf")
                         page = doc.load_page(0) 
                         pix = page.get_pixmap(dpi=150)
                         
                         img_data = pix.tobytes("png")
-                        img = PIL.Image.open(io.BytesIO(img_data))
+                        img = PILImage.open(io.BytesIO(img_data))
                         
-                        # 4. Prompt restrito: Ensina a IA a agir como Engenheiro
                         lista_solos_str = ", ".join(OPCOES_SOLO)
                         prompt = f"""
                         Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
@@ -143,24 +129,17 @@ with col_esq:
                         Não escreva NENHUM texto além do formato CSV separado por ponto e vírgula (;).
                         """
                         
-                        # 5. Chama a IA
                         resposta = modelo_visao.generate_content([prompt, img])
                         texto_csv = resposta.text.replace("```csv", "").replace("```", "").strip()
                         
-                        # 6. Converte a resposta instantaneamente em DataFrame (Tabela)
                         df_ia = pd.read_csv(io.StringIO(texto_csv), sep=";")
-                        
-                        # Limpeza para evitar erros matemáticos
                         df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                         df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
                         df_ia = df_ia.dropna(subset=['Profundidade (m)']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
                         
                         if len(df_ia) > 0:
                             st.session_state.tabela_spt = df_ia
-                            
-                            # SALVA A IMAGEM NA SESSÃO PARA O MEMORIAL
                             st.session_state.imagem_sondagem = img_data
-                            
                             st.success("✅ Laudo lido com perfeição pelo Gemini!")
                             st.rerun()
                         else:
@@ -170,7 +149,6 @@ with col_esq:
                         st.error(f"Erro na análise visual: {e}")
     st.markdown("---")
 
-    # 1. Cria a tabela inicial na memória se ela não existir
     if "tabela_spt" not in st.session_state:
         st.session_state.tabela_spt = pd.DataFrame({
             "Profundidade (m)": list(range(1, 16)),
@@ -178,7 +156,6 @@ with col_esq:
             "Tipo de Solo": ["Aterro", "Aterro"] + ["Argila"] * 13
         })
 
-    # 2. Mostra a tabela na tela puxando da memória
     df_editado = st.data_editor(
         st.session_state.tabela_spt,
         column_config={
@@ -577,7 +554,7 @@ def gerar_pdf():
     fig_sec.savefig(buf_sec, format='png', dpi=200, bbox_inches='tight')
     buf_sec.seek(0)
     story.append(Paragraph("<b>3. Seção Transversal e Armadura</b>", h2_style))
-    story.append(Image(buf_sec, width=150, height=150))
+    story.append(ReportLabImage(buf_sec, width=150, height=150))
     story.append(Spacer(1, 10))
 
     story.append(PageBreak())
@@ -586,7 +563,7 @@ def gerar_pdf():
     buf_graf = io.BytesIO()
     fig_graficos.savefig(buf_graf, format='png', dpi=200, bbox_inches='tight')
     buf_graf.seek(0)
-    story.append(Image(buf_graf, width=530, height=125))
+    story.append(ReportLabImage(buf_graf, width=530, height=125))
     story.append(Spacer(1, 15))
 
     story.append(Paragraph("<b>5. Discretização Metro a Metro (Aoki-Velloso & Winkler)</b>", h2_style))
@@ -606,32 +583,23 @@ def gerar_pdf():
     t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 8), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
     story.append(t_m)
 
+    # ANEXO: IMAGEM DO BOLETIM DE SONDAGEM (Incluso antes de compilar o PDF)
+    if "imagem_sondagem" in st.session_state and st.session_state.imagem_sondagem:
+        story.append(Spacer(1, 15))
+        story.append(Paragraph("<b>Anexo: Perfil do Boletim de Sondagem SPT</b>", h2_style))
+        story.append(Spacer(1, 10))
+
+        img_buffer = io.BytesIO(st.session_state.imagem_sondagem)
+        largura_pdf = 14 * 28.35  # 14cm em pontos
+        altura_pdf = 18 * 28.35   # 18cm em pontos
+        
+        img_pdf = ReportLabImage(img_buffer, width=largura_pdf, height=altura_pdf)
+        img_pdf.hAlign = 'CENTER'
+        story.append(img_pdf)
+
     doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
-
-    # -------------------------------------------------------------------------
-    # ANEXO: IMAGEM DO BOLETIM DE SONDAGEM (Se existir no session_state)
-    # -------------------------------------------------------------------------
-    if "imagem_sondagem" in st.session_state and st.session_state.imagem_sondagem:
-        from reportlab.platypus import Image as ReportLabImage
-        import io
-
-        elements.append(Spacer(1, 15))
-        elements.append(Paragraph("<b>Anexo: Perfil do Boletim de Sondagem SPT</b>", styles['Heading2']))
-        elements.append(Spacer(1, 10))
-
-        # Carrega a imagem a partir dos bytes gravados
-        img_buffer = io.BytesIO(st.session_state.imagem_sondagem)
-        
-        # Ajusta a largura da imagem para caber perfeitamente na página do PDF (ex: 14cm)
-        largura_pdf = 14 * 28.35 # Converte cm para pontos
-        
-        # Adiciona a imagem ao relatório ReportLab
-        img_pdf = ReportLabImage(img_buffer, width=largura_pdf, height=18 * 28.35)
-        img_pdf.hAlign = 'CENTER'
-        
-        elements.append(img_pdf)
 
 # -----------------------------------------------------------------------------
 # BOTÃO DE DOWNLOAD DO PDF NO PAINEL DIREITO
