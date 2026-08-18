@@ -6,6 +6,9 @@ import io
 import re
 import pdfplumber
 from difflib import get_close_matches
+import google.generativeai as genai
+import fitz  # PyMuPDF
+from PIL import Image
 
 # Imports do ReportLab para geração do PDF
 from reportlab.lib.pagesizes import A4
@@ -84,99 +87,72 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT E LEITOR DE PDF
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF COM INTELIGÊNCIA ARTIFICIAL VISUAL
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
     
-    # --- MOTOR DE LEITURA DO PDF ---
-    st.info("💡 Dica: A formatação de PDFs de laboratório varia muito. Se a extração automática falhar, preencha rapidamente os dados de forma manual na tabela interativa.")
-    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
+    st.info("🤖 **Novo Leitor IA Visual:** O programa agora lê a 'foto' do laudo como um engenheiro!")
+    
+    # Campo para inserir a chave de API
+    api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password", help="Pegue sua chave gratuita em: aistudio.google.com")
+    
+    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (1 Furo por vez)", type=["pdf"])
     
     if arquivo_pdf is not None:
-        if st.button("Processar Dados do PDF", width="stretch"):
-            with st.spinner("Decifrando o laudo..."):
-                try:
-                    texto_completo = ""
-                    with pdfplumber.open(arquivo_pdf) as pdf:
-                        for page in pdf.pages:
-                            # O SEGREDO: layout=True tenta preservar o alinhamento das colunas!
-                            txt = page.extract_text(layout=True) 
-                            if txt: texto_completo += txt + "\n"
-
-                    linhas = texto_completo.split('\n')
-                    dict_spt = {}
-
-                    for i, linha in enumerate(linhas):
-                        linha_lower = linha.lower()
+        if not api_key:
+            st.warning("⚠️ Insira sua Chave de API do Gemini no campo acima para habilitar o leitor visual.")
+        else:
+            if st.button("Processar Dados com IA Visual", width="stretch"):
+                with st.spinner("A Inteligência Artificial está analisando a imagem do laudo..."):
+                    try:
+                        # 1. Configura a API do Gemini
+                        genai.configure(api_key=api_key)
+                        modelo_visao = genai.GenerativeModel('gemini-1.5-flash')
                         
-                        # 1. Procura a Profundidade baseada no formato cravado (ex: 1,00, 2,45, 10,00)
-                        prof_match = re.search(r'\b(\d{1,2})[,.]\d{2}\b', linha)
+                        # 2. Tira uma "Foto" da primeira página do PDF
+                        doc = fitz.open(stream=arquivo_pdf.read(), filetype="pdf")
+                        page = doc.load_page(0) 
+                        pix = page.get_pixmap(dpi=150)
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                         
-                        if prof_match:
-                            prof_int = int(prof_match.group(1))
-                            
-                            if prof_int < 1 or prof_int > 60:
-                                continue
-                                
-                            # 2. Pega o N_SPT lendo os números antes da profundidade
-                            trecho_antes = linha[:prof_match.start()]
-                            nums = re.findall(r'\b\d+\b', trecho_antes)
-                            n_spt = 1
-                            if nums:
-                                # O último número na coluna antes da cota costuma ser o SPT final
-                                n_spt = int(nums[-1])
-                                
-                            # 3. Descobre o Solo lendo esta linha e as duas próximas (caso o texto quebre linha)
-                            solo_str = "Argila"
-                            texto_busca = linha + " " + (linhas[i+1] if i+1 < len(linhas) else "") + " " + (linhas[i+2] if i+2 < len(linhas) else "")
-                            
-                            match_k = re.search(r'\b(argila|silte|areia|aterro)\b', texto_busca.lower())
-                            if match_k:
-                                trecho = texto_busca[match_k.start() : match_k.start()+35]
-                                palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho)
-                                texto_curto = " ".join(palavras[:3]).title()
-                                match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
-                                if match:
-                                    solo_str = match[0]
-                                    
-                            # Guarda a leitura metro a metro
-                            if prof_int not in dict_spt:
-                                dict_spt[prof_int] = {
-                                    "Profundidade (m)": prof_int,
-                                    "N_SPT": n_spt,
-                                    "Tipo de Solo": solo_str
-                                }
-
-                    if dict_spt:
-                        max_prof = max(dict_spt.keys())
-                        lista_completa = []
-                        last_spt = 1
-                        last_solo = "Argila"
+                        # 3. Prompt restrito: Ensina a IA a agir como Engenheiro e gerar Tabela
+                        lista_solos_str = ", ".join(OPCOES_SOLO)
+                        prompt = f"""
+                        Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
+                        Leia a tabela desta imagem.
+                        Retorne os dados ESTRITAMENTE em formato CSV, sem markdown, sem explicações.
+                        O cabeçalho deve ser exatamente: Profundidade (m);N_SPT;Tipo de Solo
+                        Regras:
+                        1. Profundidade deve ser um número inteiro (1, 2, 3...) de 1 até o final do furo. Nunca falhe uma profundidade.
+                        2. N_SPT é o número de golpes final daquele metro (se for uma fração como 13/29, retorne apenas 13).
+                        3. O Tipo de Solo deve ser ESCOLHIDO obrigatoriamente a partir desta lista: {lista_solos_str}. Aproxime se necessário.
+                        Não escreva NENHUM texto além do formato CSV separado por ponto e vírgula (;).
+                        """
                         
-                        # Tapando os buracos metro a metro
-                        for p in range(1, max_prof + 1):
-                            if p in dict_spt:
-                                last_spt = dict_spt[p]["N_SPT"]
-                                last_solo = dict_spt[p]["Tipo de Solo"]
-                            lista_completa.append({
-                                "Profundidade (m)": p,
-                                "N_SPT": last_spt,
-                                "Tipo de Solo": last_solo
-                            })
+                        # 4. Chama a IA
+                        resposta = modelo_visao.generate_content([prompt, img])
+                        texto_csv = resposta.text.replace("```csv", "").replace("```", "").strip()
+                        
+                        # 5. Converte a resposta instantaneamente em DataFrame (Tabela)
+                        df_ia = pd.read_csv(io.StringIO(texto_csv), sep=";")
+                        
+                        # Limpeza para evitar erros matemáticos do usuário ou da IA
+                        df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
+                        df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
+                        df_ia = df_ia.dropna(subset=['Profundidade (m)']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
+                        
+                        if len(df_ia) > 0:
+                            st.session_state.tabela_spt = df_ia
+                            st.success("✅ Laudo lido com perfeição pela Inteligência Artificial!")
+                            st.rerun()
+                        else:
+                            st.error("A IA não conseguiu formatar os dados corretamente.")
                             
-                        df_novo = pd.DataFrame(lista_completa)
-                        st.session_state.tabela_spt = df_novo
-                        st.success("✅ Tabela extraída com sucesso!")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ O robô não conseguiu decifrar este PDF devido à formatação gráfica atípica do laboratório. Por favor, preencha manualmente na tabela abaixo.")
-
-                except Exception as e:
-                    st.error(f"Erro ao processar o arquivo: {e}")
-
+                    except Exception as e:
+                        st.error(f"Erro na análise visual: {e}. Verifique se a sua Chave API está correta.")
     st.markdown("---")
 
     # 1. Cria a tabela inicial na memória se ela não existir
