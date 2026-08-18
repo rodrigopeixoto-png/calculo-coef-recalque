@@ -110,7 +110,20 @@ with col_esq:
                     try:
                         # 1. Configura a API do Gemini
                         genai.configure(api_key=api_key)
-                        modelo_visao = genai.GenerativeModel('gemini-1.5-flash-latest')
+                        
+                        # Pergunta ao Google quais modelos sua chave tem permissão para usar
+                        modelos_permitidos = [m.name for m in genai.list_models()]
+                        
+                        # Escolhe automaticamente o melhor modelo de imagem disponível para você
+                        nome_modelo = 'gemini-pro-vision' # Fallback clássico
+                        if 'models/gemini-1.5-flash' in modelos_permitidos:
+                            nome_modelo = 'gemini-1.5-flash'
+                        elif 'models/gemini-1.5-pro' in modelos_permitidos:
+                            nome_modelo = 'gemini-1.5-pro'
+                        elif 'models/gemini-pro-vision' in modelos_permitidos:
+                            nome_modelo = 'gemini-pro-vision'
+                            
+                        modelo_visao = genai.GenerativeModel(nome_modelo)
                         
                         # 2. Tira uma "Foto" da primeira página do PDF (importação segura isolada)
                         import fitz
