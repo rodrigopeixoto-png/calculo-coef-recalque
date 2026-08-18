@@ -110,78 +110,27 @@ with col_esq:
                     furos_encontrados = {}
                     
                     def extrair_tabela(texto_furo):
-                        linhas = texto_furo.split('\n')
-                        dict_spt = {}
-                        
-                        for linha in linhas:
-                            linha_lower = linha.lower()
-                            
-                            # 1. Filtro 1: A linha deve conter uma palavra de solo
-                            match_solo = re.search(r'\b(argila|silte|areia|aterro|solo)\b', linha_lower)
-                            if not match_solo:
-                                continue
-                            
-                            texto_antes = linha[:match_solo.start()]
-                            
-                            # 2. Pega todos os números antes do nome do solo (ignorando sinal negativo)
-                            nums_texto = re.findall(r'\b\d+(?:[,.]\d+)?(?:/\d+)?\b', texto_antes)
-                            
-                            if not nums_texto or len(nums_texto) < 2:
-                                continue
-                                
-                            # 3. O último número antes do texto é a Profundidade
-                            prof_str = nums_texto[-1]
-                            try:
-                                prof_float = float(prof_str.replace(',', '.'))
-                                prof_int = int(round(prof_float))
-                            except:
-                                continue
+                        # EXATAMENTE a mesma regex e lógica da 1ª implementação que funcionou!
+                        padrao = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                        achados = padrao.findall(texto_furo)
 
-                            if prof_int < 1 or prof_int > 60:
-                                continue
+                        linhas_spt = []
+                        for prof, n_spt, solo_desc in achados:
+                            solo_limpo = solo_desc.strip().title()
+                            match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
+                            solo_adotado = match[0] if match else "Argila"
 
-                            # 4. Encontra o N_SPT filtrando as cotas (números com vírgula)
-                            spt_candidates = [n for n in nums_texto[:-1] if ',' not in n and '.' not in n]
-                            
-                            if not spt_candidates:
-                                continue
-                                
-                            last_spt_str = spt_candidates[-1]
-                            # Se for penetração parcial (ex: 13/29), pega apenas o 13
-                            n_spt = int(last_spt_str.split('/')[0])
+                            linhas_spt.append({
+                                "Profundidade (m)": float(prof.replace(',', '.')),
+                                "N_SPT": int(n_spt),
+                                "Tipo de Solo": solo_adotado
+                            })
 
-                            # 5. Classifica o Solo (3 primeiras palavras para inteligência)
-                            trecho_solo = linha[match_solo.start():]
-                            palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho_solo)
-                            texto_curto = " ".join(palavras[:3]).title()
-                            
-                            match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
-                            solo_str = match[0] if match else "Argila"
-
-                            if prof_int not in dict_spt:
-                                dict_spt[prof_int] = {
-                                    "Profundidade (m)": prof_int,
-                                    "N_SPT": n_spt,
-                                    "Tipo de Solo": solo_str
-                                }
-                                
-                        if dict_spt:
-                            max_prof = max(dict_spt.keys())
-                            lista_completa = []
-                            last_spt = 1
-                            last_solo = "Argila"
-                            
-                            # Preenche de 1 até o fundo, copiando o anterior se o PDF falhou em ler alguma linha
-                            for p in range(1, max_prof + 1):
-                                if p in dict_spt:
-                                    last_spt = dict_spt[p]["N_SPT"]
-                                    last_solo = dict_spt[p]["Tipo de Solo"]
-                                lista_completa.append({
-                                    "Profundidade (m)": p,
-                                    "N_SPT": last_spt,
-                                    "Tipo de Solo": last_solo
-                                })
-                            return pd.DataFrame(lista_completa)
+                        if len(linhas_spt) > 0:
+                            df_novo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
+                            # Força numeração de 1 em 1m para garantir o sequenciamento da estaca
+                            df_novo["Profundidade (m)"] = range(1, len(df_novo) + 1)
+                            return df_novo
                         return None
 
                     # Se achou furos no documento
@@ -206,7 +155,7 @@ with col_esq:
                         st.success(f"✅ Encontrados {len(furos_encontrados)} furos válidos!")
                         st.rerun()
                     else:
-                        st.warning("⚠️ Não consegui extrair as tabelas. O formato pode estar ilegível.")
+                        st.warning("⚠️ Não consegui extrair as tabelas. Verifique a formatação do PDF.")
 
                 except Exception as e:
                     st.error(f"Erro ao processar o arquivo: {e}")
