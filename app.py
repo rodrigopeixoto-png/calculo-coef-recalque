@@ -96,8 +96,11 @@ with col_esq:
     
     st.info("🤖 **Novo Leitor IA Visual:** O programa agora lê a 'foto' do laudo como um engenheiro!")
     
+    # Link clicável direto para o Google AI Studio
+    st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
+    
     # Campo para inserir a chave de API
-    api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password", help="Pegue sua chave gratuita em: aistudio.google.com")
+    api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password")
     
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (1 Furo por vez)", type=["pdf"])
     
@@ -154,7 +157,11 @@ with col_esq:
                         
                         if len(df_ia) > 0:
                             st.session_state.tabela_spt = df_ia
-                            st.success("✅ Laudo lido com perfeição pelo Gemini 3.6 Flash!")
+                            
+                            # SALVA A IMAGEM NA SESSÃO PARA O MEMORIAL
+                            st.session_state.imagem_sondagem = img_data
+                            
+                            st.success("✅ Laudo lido com perfeição pelo Gemini!")
                             st.rerun()
                         else:
                             st.error("A IA não conseguiu formatar os dados corretamente.")
@@ -602,6 +609,29 @@ def gerar_pdf():
     doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
+
+    # -------------------------------------------------------------------------
+    # ANEXO: IMAGEM DO BOLETIM DE SONDAGEM (Se existir no session_state)
+    # -------------------------------------------------------------------------
+    if "imagem_sondagem" in st.session_state and st.session_state.imagem_sondagem:
+        from reportlab.platypus import Image as ReportLabImage
+        import io
+
+        elements.append(Spacer(1, 15))
+        elements.append(Paragraph("<b>Anexo: Perfil do Boletim de Sondagem SPT</b>", styles['Heading2']))
+        elements.append(Spacer(1, 10))
+
+        # Carrega a imagem a partir dos bytes gravados
+        img_buffer = io.BytesIO(st.session_state.imagem_sondagem)
+        
+        # Ajusta a largura da imagem para caber perfeitamente na página do PDF (ex: 14cm)
+        largura_pdf = 14 * 28.35 # Converte cm para pontos
+        
+        # Adiciona a imagem ao relatório ReportLab
+        img_pdf = ReportLabImage(img_buffer, width=largura_pdf, height=18 * 28.35)
+        img_pdf.hAlign = 'CENTER'
+        
+        elements.append(img_pdf)
 
 # -----------------------------------------------------------------------------
 # BOTÃO DE DOWNLOAD DO PDF NO PAINEL DIREITO
