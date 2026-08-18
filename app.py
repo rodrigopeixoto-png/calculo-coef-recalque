@@ -110,7 +110,7 @@ with col_esq:
                     try:
                         # 1. Configura a API do Gemini
                         genai.configure(api_key=api_key)
-                        modelo_visao = genai.GenerativeModel('gemini-1.5-flash')
+                        modelo_visao = genai.GenerativeModel('gemini-1.5-flash-latest')
                         
                         # 2. Tira uma "Foto" da primeira página do PDF (importação segura isolada)
                         import fitz
