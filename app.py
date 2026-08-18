@@ -111,21 +111,29 @@ with col_esq:
                         # 1. Configura a API do Gemini
                         genai.configure(api_key=api_key)
                         
-                        # Pergunta ao Google quais modelos sua chave tem permissão para usar
-                        modelos_permitidos = [m.name for m in genai.list_models()]
+                        # =======================================================
+                        # RASTREADOR AUTOMÁTICO DE MODELOS DO GOOGLE
+                        # =======================================================
+                        modelos_disponiveis = []
+                        for m in genai.list_models():
+                            if 'generateContent' in m.supported_generation_methods:
+                                modelos_disponiveis.append(m.name.replace('models/', ''))
                         
-                        # Escolhe automaticamente o melhor modelo de imagem disponível para você
-                        nome_modelo = 'gemini-pro-vision' # Fallback clássico
-                        if 'models/gemini-1.5-flash' in modelos_permitidos:
-                            nome_modelo = 'gemini-1.5-flash'
-                        elif 'models/gemini-1.5-pro' in modelos_permitidos:
-                            nome_modelo = 'gemini-1.5-pro'
-                        elif 'models/gemini-pro-vision' in modelos_permitidos:
-                            nome_modelo = 'gemini-pro-vision'
+                        if not modelos_disponiveis:
+                            st.error("❌ Sua chave é válida, mas não possui permissão para usar modelos de IA. Verifique o Google AI Studio.")
+                            st.stop()
                             
-                        modelo_visao = genai.GenerativeModel(nome_modelo)
+                        # Pega o primeiro modelo autorizado. Dá preferência aos modelos rápidos (flash ou vision)
+                        modelo_escolhido = modelos_disponiveis[0]
+                        for nome in modelos_disponiveis:
+                            if 'flash' in nome or 'vision' in nome:
+                                modelo_escolhido = nome
+                                break
+                                
+                        modelo_visao = genai.GenerativeModel(modelo_escolhido)
+                        # =======================================================
                         
-                        # 2. Tira uma "Foto" da primeira página do PDF (importação segura isolada)
+                        # 2. Tira uma "Foto" da primeira página do PDF de forma segura
                         import fitz
                         import PIL.Image
                         import io
@@ -134,7 +142,6 @@ with col_esq:
                         page = doc.load_page(0) 
                         pix = page.get_pixmap(dpi=150)
                         
-                        # Converte para foto de forma 100% segura
                         img_data = pix.tobytes("png")
                         img = PIL.Image.open(io.BytesIO(img_data))
                         
@@ -166,13 +173,13 @@ with col_esq:
                         
                         if len(df_ia) > 0:
                             st.session_state.tabela_spt = df_ia
-                            st.success("✅ Laudo lido com perfeição pela Inteligência Artificial!")
+                            st.success(f"✅ Laudo lido com sucesso usando a IA: {modelo_escolhido}")
                             st.rerun()
                         else:
                             st.error("A IA não conseguiu formatar os dados corretamente.")
                             
                     except Exception as e:
-                        st.error(f"Erro na análise visual: {e}. Verifique se a sua Chave API está correta.")
+                        st.error(f"Erro na análise visual: {e}")
     st.markdown("---")
 
     # 1. Cria a tabela inicial na memória se ela não existir
