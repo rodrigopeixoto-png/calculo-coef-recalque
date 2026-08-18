@@ -108,9 +108,8 @@ with col_esq:
                     pedacos = re.split(r'(Furo\s*[A-Z\d\-]+|SP\s*-\s*\d+)', texto_completo, flags=re.IGNORECASE)
                     
                     furos_encontrados = {}
-                  
                     
-                  def extrair_tabela(texto_furo):
+                    def extrair_tabela(texto_furo):
                         # Novo padrão tolerante: ignora os golpes intermediários de 15cm
                         padrao_avancado = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(?:[\d.,/]+\s+)*?(\d{1,3})\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
                         achados = padrao_avancado.findall(texto_furo)
@@ -158,7 +157,7 @@ with col_esq:
                 except Exception as e:
                     st.error(f"Erro ao processar o arquivo: {e}")
 
-   # SELETOR DE FUROS (Só aparece se houver dados no Fichário da Sessão)
+    # SELETOR DE FUROS (Só aparece se houver dados no Fichário da Sessão)
     if "dados_furos_pdf" in st.session_state and st.session_state.dados_furos_pdf:
         opcoes_furos = list(st.session_state.dados_furos_pdf.keys())
         
@@ -170,7 +169,7 @@ with col_esq:
             if st.button("Carregar Furo", width="stretch"):
                 st.session_state.tabela_spt = st.session_state.dados_furos_pdf[furo_escolhido]
                 st.rerun()
-               
+
     st.markdown("---")
     
     # 1. Cria a tabela inicial na memória se ela não existir
