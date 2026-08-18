@@ -110,7 +110,7 @@ with col_esq:
                     furos_encontrados = {}
                     padrao_spt = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
                     
-                    def extrair_tabela(texto_furo):
+                   def extrair_tabela(texto_furo):
                         achados = padrao_spt.findall(texto_furo)
                         linhas_spt = []
                         for prof, n_spt, solo_desc in achados:
