@@ -96,7 +96,7 @@ with col_esq:
     
     if arquivo_pdf is not None:
         if st.button("Processar Dados do PDF", width="stretch"):
-            with st.spinner("Analisando o laudo e separando os furos..."):
+            with st.spinner("Analisando o laudo e extraindo camadas..."):
                 try:
                     texto_completo = ""
                     with pdfplumber.open(arquivo_pdf) as pdf:
@@ -110,36 +110,66 @@ with col_esq:
                     furos_encontrados = {}
                     
                     def extrair_tabela(texto_furo):
-                        # Padrão super tolerante: captura "N_SPT", "Profundidade", e "Texto do Solo" ignorando o lixo antes
-                        # Ex: "11 12 1,00 Argila siltoarenosa" -> Pega 12, 1.00, Argila
-                        # Ex: "10/27 2,00 Silte" -> Pega 10, 2.00, Silte
-                        padrao_avancado = re.compile(r'(\d{1,3})(?:/\d{1,3})?\s+(\d{1,2}(?:[.,]\d{1,2})?)\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
-                        achados = padrao_avancado.findall(texto_furo)
-                        
+                        linhas = texto_furo.split('\n')
                         dict_spt = {}
-                        for n_spt_str, prof_str, solo_desc in achados:
-                            prof_float = float(prof_str.replace(',', '.'))
-                            prof_int = int(round(prof_float)) # 10,45m vira 10m
+                        
+                        for linha in linhas:
+                            linha_lower = linha.lower()
                             
-                            if prof_int < 1: continue
+                            # 1. Filtro 1: A linha deve conter uma palavra de solo
+                            if not any(k in linha_lower for k in ['argila', 'silte', 'areia', 'aterro', 'solo']):
+                                continue
                             
-                            solo_limpo = solo_desc.strip().title()
-                            match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
-                            solo_adotado = match[0] if match else "Argila"
+                            # 2. Filtro 2: Encontra a Profundidade cravada no formato X,XX ou X.XX
+                            prof_match = re.search(r'\b(\d{1,2})[,.](\d{2})\b', linha)
+                            if not prof_match:
+                                continue
+                            
+                            prof_float = float(prof_match.group().replace(',', '.'))
+                            prof_int = int(round(prof_float))
+                            
+                            if prof_int < 1 or prof_int > 50:
+                                continue
+                                
+                            # 3. Pega o N_SPT: É sempre o último número válido antes da profundidade
+                            idx_prof = prof_match.start()
+                            texto_antes = linha[:idx_prof]
+                            
+                            # Captura números isolados ou a primeira parte de uma fração (ex: pega 13 de 13/29)
+                            nums_antes = re.findall(r'\b(\d{1,3})(?:/\d{1,3})?\b', texto_antes)
+                            
+                            if not nums_antes:
+                                continue
+                            
+                            n_spt = int(nums_antes[-1])
+                            
+                            # 4. Determina o Solo extraindo o trecho exato
+                            solo_str = "Argila"
+                            match_k = re.search(r'\b(argila|silte|areia|aterro|solo)\b.*', linha_lower)
+                            if match_k:
+                                trecho = match_k.group()
+                                # Pega as 3 primeiras palavras do solo para não confundir a inteligência
+                                palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho)
+                                texto_curto = " ".join(palavras[:3]).title()
+                                
+                                match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
+                                if match:
+                                    solo_str = match[0]
                             
                             if prof_int not in dict_spt:
                                 dict_spt[prof_int] = {
                                     "Profundidade (m)": prof_int,
-                                    "N_SPT": int(n_spt_str),
-                                    "Tipo de Solo": solo_adotado
+                                    "N_SPT": n_spt,
+                                    "Tipo de Solo": solo_str
                                 }
                                 
                         if dict_spt:
                             max_prof = max(dict_spt.keys())
                             lista_completa = []
-                            # Preenche de 1 até a profundidade máxima, tapando buracos se o PDF estiver falhado
                             last_spt = 1
                             last_solo = "Argila"
+                            
+                            # Preenche de 1 até o fundo, copiando o anterior se o PDF falhou em ler alguma linha
                             for p in range(1, max_prof + 1):
                                 if p in dict_spt:
                                     last_spt = dict_spt[p]["N_SPT"]
@@ -174,7 +204,7 @@ with col_esq:
                         st.success(f"✅ Encontrados {len(furos_encontrados)} furos válidos!")
                         st.rerun()
                     else:
-                        st.warning("⚠️ Não consegui extrair as tabelas. Verifique a formatação do PDF.")
+                        st.warning("⚠️ Não consegui extrair as tabelas. O formato pode estar ilegível.")
 
                 except Exception as e:
                     st.error(f"Erro ao processar o arquivo: {e}")
@@ -213,6 +243,7 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
+
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
