@@ -155,7 +155,7 @@ with col_esq:
                 except Exception as e:
                     st.error(f"Erro ao processar o arquivo: {e}")
 
-    # SELETOR DE FUROS (Só aparece se houver dados no Fichário da Sessão)
+   # SELETOR DE FUROS (Só aparece se houver dados no Fichário da Sessão)
     if "dados_furos_pdf" in st.session_state and st.session_state.dados_furos_pdf:
         opcoes_furos = list(st.session_state.dados_furos_pdf.keys())
         
@@ -166,9 +166,8 @@ with col_esq:
         with c_btn:
             if st.button("Carregar Furo", width="stretch"):
                 st.session_state.tabela_spt = st.session_state.dados_furos_pdf[furo_escolhido]
-                try: st.rerun()
-                except: st.experimental_rerun()
-
+                st.rerun()
+               
     st.markdown("---")
     
     # 1. Cria a tabela inicial na memória se ela não existir
