@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import io
-import pdfplumber
 import re
+import pdfplumber
 from difflib import get_close_matches
 
 # Imports do ReportLab para geração do PDF
@@ -47,7 +47,7 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
 st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
-st.caption("Verificação Geotécnica, Esforços, Armação, Quantitativos e PDF")
+st.caption("Leitor de PDF, Verificação Geotécnica, Esforços, Armação e Quantitativos")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - PARÂMETROS
@@ -84,7 +84,7 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT E LEITOR DE PDF
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF INTELIGENTE (MULTI-FUROS)
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
@@ -95,62 +95,84 @@ with col_esq:
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
     if arquivo_pdf is not None:
-        if st.button("Processar Dados do PDF", use_container_width=True):
-            with st.spinner("Analisando o laudo e extraindo camadas..."):
+        if st.button("Processar Dados do PDF", width="stretch"):
+            with st.spinner("Analisando o laudo e separando os furos..."):
                 try:
                     texto_completo = ""
-                    # Lê o texto de todas as páginas
                     with pdfplumber.open(arquivo_pdf) as pdf:
                         for page in pdf.pages:
                             txt = page.extract_text()
                             if txt: texto_completo += txt + "\n"
 
-                    # 1. Identifica os Furos no laudo (Ex: Furo SP-01, Furo 2)
-                    furos = list(set(re.findall(r'Furo\s*[A-Z\d\-]+|SP\s*-\s*\d+', texto_completo, re.IGNORECASE)))
-                    if furos:
-                        st.success(f"📍 Furos detectados no arquivo: {', '.join(furos)}")
+                    # Fatia o documento em blocos baseados nos nomes dos furos
+                    pedacos = re.split(r'(Furo\s*[A-Z\d\-]+|SP\s*-\s*\d+)', texto_completo, flags=re.IGNORECASE)
+                    
+                    furos_encontrados = {}
+                    padrao_spt = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                    
+                    def extrair_tabela(texto_furo):
+                        achados = padrao_spt.findall(texto_furo)
+                        linhas_spt = []
+                        for prof, n_spt, solo_desc in achados:
+                            solo_limpo = solo_desc.strip().title()
+                            match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
+                            solo_adotado = match[0] if match else "Argila"
+                            linhas_spt.append({
+                                "Profundidade (m)": float(prof.replace(',', '.')),
+                                "N_SPT": int(n_spt),
+                                "Tipo de Solo": solo_adotado
+                            })
+                        if linhas_spt:
+                            df_furo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
+                            df_furo["Profundidade (m)"] = range(1, len(df_furo) + 1)
+                            return df_furo
+                        return None
 
-                    # 2. Heurística de Leitura (Procura linhas com: Profundidade + SPT + Solo)
-                    # Exemplo de linha que ele lê: "1,0  12  Argila Siltosa mole"
-                    padrao = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
-                    achados = padrao.findall(texto_completo)
-
-                    linhas_spt = []
-                    for prof, n_spt, solo_desc in achados:
-                        # Limpa o texto lido do laboratório
-                        solo_limpo = solo_desc.strip().title()
-                        
-                        # INTELIGÊNCIA: Acha o solo mais parecido no nosso dicionário (corrige erros e abreviações)
-                        match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
-                        solo_adotado = match[0] if match else "Argila" # Padrão de segurança se não reconhecer
-
-                        linhas_spt.append({
-                            "Profundidade (m)": float(prof.replace(',', '.')),
-                            "N_SPT": int(n_spt),
-                            "Tipo de Solo": solo_adotado
-                        })
-
-                    if len(linhas_spt) > 0:
-                        # Monta a tabela, remove duplicatas e garante a ordem
-                        df_novo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
-                        df_novo["Profundidade (m)"] = range(1, len(df_novo) + 1) # Força numeração de 1 em 1m
-                        
-                        st.session_state.tabela_spt = df_novo
-                        
-                        # Reinicia a tela para mostrar a nova tabela
-                        try:
-                            st.rerun()
-                        except AttributeError:
-                            st.experimental_rerun()
+                    # Se achou furos no documento
+                    if len(pedacos) == 1:
+                        df_unico = extrair_tabela(pedacos[0])
+                        if df_unico is not None: furos_encontrados["Furo Único"] = df_unico
                     else:
-                        st.warning("⚠️ Não consegui extrair a tabela. O PDF pode ser uma imagem escaneada ou ter uma formatação complexa. Preencha manualmente abaixo.")
+                        df_0 = extrair_tabela(pedacos[0])
+                        if df_0 is not None and not df_0.empty: furos_encontrados["Furo Inicial"] = df_0
+
+                        for i in range(1, len(pedacos), 2):
+                            nome = pedacos[i].strip().upper()
+                            texto_furo = pedacos[i+1]
+                            df_f = extrair_tabela(texto_furo)
+                            if df_f is not None and not df_f.empty:
+                                furos_encontrados[nome] = df_f
+
+                    if furos_encontrados:
+                        st.session_state.dados_furos_pdf = furos_encontrados
+                        primeiro_furo = list(furos_encontrados.keys())[0]
+                        st.session_state.tabela_spt = furos_encontrados[primeiro_furo]
+                        st.success(f"✅ Encontrados {len(furos_encontrados)} furos válidos!")
+                        try: st.rerun()
+                        except: st.experimental_rerun()
+                    else:
+                        st.warning("⚠️ Não consegui extrair as tabelas. Verifique a formatação do PDF.")
 
                 except Exception as e:
                     st.error(f"Erro ao processar o arquivo: {e}")
-    st.markdown("---")
-    # ------------------------------------------------
 
-    # 1. Cria a tabela inicial na memória se ela não existir ou se não subiu PDF
+    # SELETOR DE FUROS (Só aparece se houver dados no Fichário da Sessão)
+    if "dados_furos_pdf" in st.session_state and st.session_state.dados_furos_pdf:
+        opcoes_furos = list(st.session_state.dados_furos_pdf.keys())
+        
+        st.markdown("##### 📌 Escolha qual furo utilizar:")
+        c_sel, c_btn = st.columns([2, 1])
+        with c_sel:
+            furo_escolhido = st.selectbox("Selecione o Furo:", opcoes_furos, label_visibility="collapsed")
+        with c_btn:
+            if st.button("Carregar Furo", width="stretch"):
+                st.session_state.tabela_spt = st.session_state.dados_furos_pdf[furo_escolhido]
+                try: st.rerun()
+                except: st.experimental_rerun()
+
+    st.markdown("---")
+    
+    # 1. Cria a tabela inicial na memória se ela não existir
     if "tabela_spt" not in st.session_state:
         st.session_state.tabela_spt = pd.DataFrame({
             "Profundidade (m)": list(range(1, 16)),
@@ -169,6 +191,7 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
+
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
@@ -294,7 +317,6 @@ else:
 # -----------------------------------------------------------------------------
 # CÁLCULO DA RESISTÊNCIA ESTRUTURAL E QUANTITATIVOS DE MATERIAIS
 # -----------------------------------------------------------------------------
-# Aço Longitudinal
 area_barra = (np.pi * (bitola / 1000)**2) / 4  
 A_s_teorico = (taxa_armadura / 100) * Area_c
 n_raw = A_s_teorico / area_barra
@@ -312,17 +334,13 @@ braco_alavanca = 0.75 * B if secao == "Circular" else 0.80 * B
 M_rd = A_s_real * fyd * braco_alavanca 
 H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
 
-# Quantitativos (Concreto e Aço)
 V_concreto = Area_c * comprimento_estaca
-peso_esp_aco = 7850 # kg/m³
-cobrimento = 0.04 # m
-
-# Peso Longitidinal
+peso_esp_aco = 7850 
+cobrimento = 0.04 
 peso_long = n_barras * area_barra * L_armadura * peso_esp_aco
 
-# Peso Estribos (Adotado construtivo padrão: Φ 6.3 mm c/ 15cm)
-bitola_estribo = 6.3 # mm
-espacamento_estribo = 0.15 # m
+bitola_estribo = 6.3 
+espacamento_estribo = 0.15 
 area_estribo = (np.pi * (bitola_estribo / 1000)**2) / 4
 perimetro_estribo = np.pi * (B - 2*cobrimento) if secao == "Circular" else 4 * (B - 2*cobrimento)
 n_estribos = int(L_armadura / espacamento_estribo)
@@ -352,7 +370,6 @@ with col_dir:
     f1, f2 = st.columns(2)
     f1.metric("Momento Resistente (M_Rd)", f"{M_rd:.1f} kN.m")
     f2.metric("Momento Máx Atuante", f"{momento_max_atuante:.1f} kN.m")
-    
     h1, h2 = st.columns(2)
     h1.metric("Força Horiz. Máx (H_Rd)", f"{H_rd:.1f} kN")
     h2.metric("Deslocamento de Topo", f"{deslocamento_max_mm:.2f} mm")
@@ -426,8 +443,8 @@ st.dataframe(
         "Rl Acum. (kN)": "{:,.2f}",
         "Rc Adm (kN)": "{:,.2f}"
     }),
-    use_container_width=True,
-    hide_index=True
+    hide_index=True,
+    width="stretch"
 )
 
 # -----------------------------------------------------------------------------
@@ -454,14 +471,15 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax_cap.grid(True, linestyle="--", alpha=0.6)
     
     # 1. Molas Geotécnicas
-    ax0.plot(df_spt["kh (kN/m³)"], df_spt["Profundidade (m)"], label="k_h", marker="o", color="#1f77b4")
-    ax0.plot(df_spt["kv (kN/m³)"], df_spt["Profundidade (m)"], label="k_v", marker="s", color="#ff7f0e")
+    ax0.plot(df_spt["kh (kN/m³)"], df_spt["Profundidade (m)"], label="k_h (Horizontal)", marker="o", color="#1f77b4")
+    ax0.plot(df_spt["kv (kN/m³)"], df_spt["Profundidade (m)"], label="k_v (Vertical)", marker="s", color="#ff7f0e")
     ax0.axhspan(cota_assentamento, cota_fim, color='yellow', alpha=0.2)
     plota_na(ax0, df_spt["Profundidade (m)"].max())
     ax0.invert_yaxis()
     ax0.set_xlabel("Recalque (kN/m³)")
     ax0.set_title("Molas Solo")
     ax0.grid(True, linestyle="--", alpha=0.6)
+    ax0.legend(loc="lower right", fontsize=9)
 
     # 2. Momento Fletor
     ax1.plot(m_flet, z_vals, color="red", linewidth=2, label="M Atuante")
@@ -484,7 +502,7 @@ if tipo_fundacao == "Profunda (Estaca)":
     ax2.set_title("Elástica")
     ax2.grid(True, linestyle="--", alpha=0.6)
 
-    # 4. ELEVAÇÃO DETALHADA DA ESTACA (Armadura e Estribos)
+    # 4. ELEVAÇÃO DETALHADA DA ESTACA
     ax_elev.plot([-B/2, -B/2], [0, comprimento_estaca], color='grey', lw=2)
     ax_elev.plot([B/2, B/2], [0, comprimento_estaca], color='grey', lw=2)
     ax_elev.plot([-B/2, B/2], [comprimento_estaca, comprimento_estaca], color='grey', lw=2)
@@ -494,12 +512,10 @@ if tipo_fundacao == "Profunda (Estaca)":
         ax_elev.axhline(y=nivel_agua, color='blue', linestyle='-.', lw=2)
         ax_elev.fill_betweenx([nivel_agua, comprimento_estaca * 1.05], -B*1.2, B*1.2, color='blue', alpha=0.08)
 
-    # Barras Longitudinais (Corte Visual - representadas nas extremidades)
     r_arm = B/2 - cobrimento
     ax_elev.plot([-r_arm, -r_arm], [0, L_armadura], color='red', lw=2)
     ax_elev.plot([r_arm, r_arm], [0, L_armadura], color='red', lw=2)
     
-    # Discretização dos Estribos (Traços Horizontais ao longo da Gaiola)
     z_estribos = np.arange(0, L_armadura, espacamento_estribo)
     for z_est in z_estribos:
         ax_elev.plot([-r_arm, r_arm], [z_est, z_est], color='darkred', lw=0.8, alpha=0.6)
@@ -518,14 +534,7 @@ if tipo_fundacao == "Profunda (Estaca)":
 # -----------------------------------------------------------------------------
 def gerar_pdf():
     pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        pdf_buffer, 
-        pagesize=A4, 
-        rightMargin=30, 
-        leftMargin=30, 
-        topMargin=30, 
-        bottomMargin=30
-    )
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     story = []
     styles = getSampleStyleSheet()
 
@@ -533,12 +542,10 @@ def gerar_pdf():
     h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
     body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
 
-    # 1. Cabeçalho
     story.append(Paragraph("<b>MEMORIAL DE CÁLCULO DE FUNDAÇÕES</b>", title_style))
     story.append(Paragraph("<b>Integração Solo-Estrutura, Verificação e Quantitativos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1, fontSize=10, leading=14)))
     story.append(Spacer(1, 15))
 
-    # 2. Entradas
     story.append(Paragraph("<b>1. Parâmetros Gerais e Solicitações</b>", h2_style))
     data_input = [
         [Paragraph("<b>Fundação:</b>", body_style), Paragraph(f"{tipo_fundacao} ({metodo_construtivo})", body_style),
@@ -551,17 +558,10 @@ def gerar_pdf():
          Paragraph("<b>Nível d'Água (N.A.):</b>", body_style), Paragraph(f"{'Prof: ' + str(nivel_agua) + 'm' if tem_na else 'Ausente'}", body_style)]
     ]
     t_input = Table(data_input, colWidths=[90, 170, 110, 160])
-    t_input.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F3F4F6')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 4),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
-    ]))
+    t_input.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F3F4F6')), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 4), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
     story.append(t_input)
     story.append(Spacer(1, 10))
 
-    # 3. Resumo e Quantitativos
     story.append(Paragraph("<b>2. Resultados e Quantitativos de Materiais</b>", h2_style))
     data_res = [
         [Paragraph("<b>Capacidade Geotécnica (Q_adm)</b>", body_style), Paragraph(f"<b>{Q_adm:,.2f} kN</b> (Status: {'OK' if carga_V <= Q_adm else 'FALHA'})", body_style)],
@@ -571,17 +571,10 @@ def gerar_pdf():
         [Paragraph("<b>Quantitativos (Concreto e Aço)</b>", body_style), Paragraph(f"Vol. Conc.: <b>{V_concreto:.2f} m³</b> | Peso Aço: <b>{peso_aco_total:.1f} kg</b> (Taxa: {taxa_aco_kg_m3:.1f} kg/m³)", body_style)]
     ]
     t_res = Table(data_res, colWidths=[200, 330])
-    t_res.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#9CA3AF')),
-        ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#E5E7EB')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 4),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
-    ]))
+    t_res.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#9CA3AF')), ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#E5E7EB')), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 4), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
     story.append(t_res)
     story.append(Spacer(1, 15))
 
-    # 4. Imagem do Detalhamento da Seção
     buf_sec = io.BytesIO()
     fig_sec.savefig(buf_sec, format='png', dpi=200, bbox_inches='tight')
     buf_sec.seek(0)
@@ -591,7 +584,6 @@ def gerar_pdf():
 
     story.append(PageBreak())
 
-    # 5. Gráficos Combinados
     story.append(Paragraph("<b>4. Diagramas Geotécnicos, Esforços e Elevação</b>", h2_style))
     buf_graf = io.BytesIO()
     fig_graficos.savefig(buf_graf, format='png', dpi=200, bbox_inches='tight')
@@ -599,7 +591,6 @@ def gerar_pdf():
     story.append(Image(buf_graf, width=530, height=125))
     story.append(Spacer(1, 15))
 
-    # 6. Tabela Metro a Metro
     story.append(Paragraph("<b>5. Discretização Metro a Metro (Aoki-Velloso & Winkler)</b>", h2_style))
     data_tab = [["Prof(m)", "Solo", "N_SPT", "k_v (kN/m³)", "k_h (kN/m³)", "r_l (kPa)", "R_p (kN)", "R_c Adm (kN)"]]
     for idx, r in df_export_completo.head(15).iterrows():
@@ -614,15 +605,7 @@ def gerar_pdf():
             f"{r['Rc Adm (kN)']:.1f}"
         ])
     t_m = Table(data_tab, colWidths=[40, 80, 45, 75, 75, 60, 60, 95])
-    t_m.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,-1), 8),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-    ]))
+    t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 8), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
     story.append(t_m)
 
     doc.build(story)
@@ -640,5 +623,5 @@ with col_dir:
         data=pdf_bytes,
         file_name=f"Memorial_Calculo_Estaca_B{B*100:.0f}cm.pdf",
         mime="application/pdf",
-        use_container_width=True
+        width="stretch"
     )
