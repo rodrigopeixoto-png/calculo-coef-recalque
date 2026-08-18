@@ -108,7 +108,7 @@ with col_esq:
                     pedacos = re.split(r'(Furo\s*[A-Z\d\-]+|SP\s*-\s*\d+)', texto_completo, flags=re.IGNORECASE)
                     
                     furos_encontrados = {}
-                    padrao_spt = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                  
                     
                   def extrair_tabela(texto_furo):
                         # Novo padrão tolerante: ignora os golpes intermediários de 15cm
