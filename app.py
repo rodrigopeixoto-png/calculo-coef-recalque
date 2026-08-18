@@ -110,27 +110,97 @@ with col_esq:
                     furos_encontrados = {}
                     
                     def extrair_tabela(texto_furo):
-                        # EXATAMENTE a mesma regex e lógica da 1ª implementação que funcionou!
-                        padrao = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
-                        achados = padrao.findall(texto_furo)
-
-                        linhas_spt = []
-                        for prof, n_spt, solo_desc in achados:
-                            solo_limpo = solo_desc.strip().title()
-                            match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
-                            solo_adotado = match[0] if match else "Argila"
-
-                            linhas_spt.append({
-                                "Profundidade (m)": float(prof.replace(',', '.')),
-                                "N_SPT": int(n_spt),
-                                "Tipo de Solo": solo_adotado
-                            })
-
-                        if len(linhas_spt) > 0:
-                            df_novo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
-                            # Força numeração de 1 em 1m para garantir o sequenciamento da estaca
-                            df_novo["Profundidade (m)"] = range(1, len(df_novo) + 1)
-                            return df_novo
+                        linhas = texto_furo.split('\n')
+                        dict_spt = {}
+                        last_seen_tokens = [] # Guarda os números caso o nome do solo pule para a linha de baixo
+                        
+                        for linha in linhas:
+                            linha_lower = linha.lower()
+                            tokens = linha.split()
+                            
+                            # 1. Busca por nome de solo
+                            match_solo = re.search(r'\b(argila|silte|areia|aterro|solo)\b', linha_lower)
+                            
+                            if not match_solo:
+                                # Se não tem solo, mas tem número, guardamos na memória
+                                if any(char.isdigit() for char in linha):
+                                    last_seen_tokens = tokens
+                                continue
+                                
+                            # 2. Achou o solo! Vamos pegar os números antes dele
+                            texto_antes = linha[:match_solo.start()].strip()
+                            tokens_antes = texto_antes.split()
+                            
+                            if tokens_antes:
+                                tokens_to_use = tokens_antes
+                            else:
+                                tokens_to_use = last_seen_tokens
+                                
+                            if not tokens_to_use:
+                                continue
+                                
+                            # 3. Descobre a Profundidade (último número que aceita decimal)
+                            prof_int = None
+                            for tk in reversed(tokens_to_use):
+                                tk_clean = tk.replace(',', '.')
+                                try:
+                                    prof_float = float(tk_clean)
+                                    if 0 < prof_float <= 60:
+                                        prof_int = int(round(prof_float))
+                                        break
+                                except:
+                                    continue
+                                    
+                            if not prof_int:
+                                continue
+                                
+                            # 4. Descobre o N_SPT (último número antes da cota que NÃO tem vírgula/ponto)
+                            spt_cands = [t for t in tokens_to_use if ',' not in t and '.' not in t]
+                            if not spt_cands:
+                                continue
+                                
+                            last_spt_str = spt_cands[-1]
+                            try:
+                                if '/' in last_spt_str:
+                                    n_spt = int(last_spt_str.split('/')[0]) # Resolve as frações ex: 13/29 vira 13
+                                else:
+                                    clean_spt = re.sub(r'\D', '', last_spt_str)
+                                    n_spt = int(clean_spt) if clean_spt else 1
+                            except:
+                                continue
+                                
+                            # 5. Classifica o Solo com inteligência de aproximação
+                            trecho_solo = linha[match_solo.start():]
+                            palavras = re.findall(r'[a-zA-ZÀ-ÖØ-öø-ÿ]+', trecho_solo)
+                            texto_curto = " ".join(palavras[:3]).title()
+                            
+                            match = get_close_matches(texto_curto, OPCOES_SOLO, n=1, cutoff=0.35)
+                            solo_str = match[0] if match else "Argila"
+                            
+                            if prof_int not in dict_spt:
+                                dict_spt[prof_int] = {
+                                    "Profundidade (m)": prof_int,
+                                    "N_SPT": n_spt,
+                                    "Tipo de Solo": solo_str
+                                }
+                                
+                        if dict_spt:
+                            max_prof = max(dict_spt.keys())
+                            lista_completa = []
+                            last_spt = 1
+                            last_solo = "Argila"
+                            
+                            # Preenche de 1 até o fundo, copiando a camada de cima se houver falha na leitura
+                            for p in range(1, max_prof + 1):
+                                if p in dict_spt:
+                                    last_spt = dict_spt[p]["N_SPT"]
+                                    last_solo = dict_spt[p]["Tipo de Solo"]
+                                lista_completa.append({
+                                    "Profundidade (m)": p,
+                                    "N_SPT": last_spt,
+                                    "Tipo de Solo": last_solo
+                                })
+                            return pd.DataFrame(lista_completa)
                         return None
 
                     # Se achou furos no documento
