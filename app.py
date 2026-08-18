@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import io
+import pdfplumber
+import re
+from difflib import get_close_matches
 
 # Imports do ReportLab para geração do PDF
 from reportlab.lib.pagesizes import A4
@@ -81,34 +84,91 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    profundidades = list(range(1, 16))
     
-    spt_padrao = [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24]
-    solos_modelo = ["Aterro", "Aterro"] + ["Argila"] * 13 
+    # --- MOTOR DE LEITURA DO PDF ---
+    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
+    
+    if arquivo_pdf is not None:
+        if st.button("Processar Dados do PDF", use_container_width=True):
+            with st.spinner("Analisando o laudo e extraindo camadas..."):
+                try:
+                    texto_completo = ""
+                    # Lê o texto de todas as páginas
+                    with pdfplumber.open(arquivo_pdf) as pdf:
+                        for page in pdf.pages:
+                            txt = page.extract_text()
+                            if txt: texto_completo += txt + "\n"
 
-    df_spt_input = pd.DataFrame({
-        "Profundidade (m)": profundidades,
-        "N_SPT": spt_padrao,
-        "Tipo de Solo": solos_modelo
-    })
+                    # 1. Identifica os Furos no laudo (Ex: Furo SP-01, Furo 2)
+                    furos = list(set(re.findall(r'Furo\s*[A-Z\d\-]+|SP\s*-\s*\d+', texto_completo, re.IGNORECASE)))
+                    if furos:
+                        st.success(f"📍 Furos detectados no arquivo: {', '.join(furos)}")
 
+                    # 2. Heurística de Leitura (Procura linhas com: Profundidade + SPT + Solo)
+                    # Exemplo de linha que ele lê: "1,0  12  Argila Siltosa mole"
+                    padrao = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                    achados = padrao.findall(texto_completo)
+
+                    linhas_spt = []
+                    for prof, n_spt, solo_desc in achados:
+                        # Limpa o texto lido do laboratório
+                        solo_limpo = solo_desc.strip().title()
+                        
+                        # INTELIGÊNCIA: Acha o solo mais parecido no nosso dicionário (corrige erros e abreviações)
+                        match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
+                        solo_adotado = match[0] if match else "Argila" # Padrão de segurança se não reconhecer
+
+                        linhas_spt.append({
+                            "Profundidade (m)": float(prof.replace(',', '.')),
+                            "N_SPT": int(n_spt),
+                            "Tipo de Solo": solo_adotado
+                        })
+
+                    if len(linhas_spt) > 0:
+                        # Monta a tabela, remove duplicatas e garante a ordem
+                        df_novo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
+                        df_novo["Profundidade (m)"] = range(1, len(df_novo) + 1) # Força numeração de 1 em 1m
+                        
+                        st.session_state.tabela_spt = df_novo
+                        
+                        # Reinicia a tela para mostrar a nova tabela
+                        try:
+                            st.rerun()
+                        except AttributeError:
+                            st.experimental_rerun()
+                    else:
+                        st.warning("⚠️ Não consegui extrair a tabela. O PDF pode ser uma imagem escaneada ou ter uma formatação complexa. Preencha manualmente abaixo.")
+
+                except Exception as e:
+                    st.error(f"Erro ao processar o arquivo: {e}")
+    st.markdown("---")
+    # ------------------------------------------------
+
+    # 1. Cria a tabela inicial na memória se ela não existir ou se não subiu PDF
+    if "tabela_spt" not in st.session_state:
+        st.session_state.tabela_spt = pd.DataFrame({
+            "Profundidade (m)": list(range(1, 16)),
+            "N_SPT": [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24],
+            "Tipo de Solo": ["Aterro", "Aterro"] + ["Argila"] * 13
+        })
+
+    # 2. Mostra a tabela na tela puxando da memória
     df_editado = st.data_editor(
-        df_spt_input,
+        st.session_state.tabela_spt,
         column_config={
             "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
             "N_SPT": st.column_config.NumberColumn("N_SPT", min_value=1, max_value=100, step=1),
             "Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)
         },
         num_rows="dynamic",
-        use_container_width=True
+        width="stretch"
     )
-
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
