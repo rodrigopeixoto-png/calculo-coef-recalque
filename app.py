@@ -148,8 +148,7 @@ with col_esq:
                         primeiro_furo = list(furos_encontrados.keys())[0]
                         st.session_state.tabela_spt = furos_encontrados[primeiro_furo]
                         st.success(f"✅ Encontrados {len(furos_encontrados)} furos válidos!")
-                        try: st.rerun()
-                        except: st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.warning("⚠️ Não consegui extrair as tabelas. Verifique a formatação do PDF.")
 
