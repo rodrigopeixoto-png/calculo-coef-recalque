@@ -87,24 +87,29 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT E LEITOR DE PDF COM INTELIGÊNCIA ARTIFICIAL VISUAL
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF COM IA VISUAL (SELEÇÃO DE FURO)
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    st.info("🤖 **Novo Leitor IA Visual:** O programa agora lê a 'foto' do laudo como um engenheiro!")
+    st.info("🤖 **Leitor IA Visual:** Lê a imagem do laudo e extrai o furo selecionado!")
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     
     api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password")
-    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (1 Furo por vez)", type=["pdf"])
+    
+    col_pdf, col_furo = st.columns([2, 1])
+    with col_pdf:
+        arquivo_pdf = st.file_uploader("📥 Importar Laudo (PDF)", type=["pdf"])
+    with col_furo:
+        nome_furo_desejado = st.text_input("📌 Nome do Furo:", value="SP-01", help="Ex: SP-01, SP-02, Furo 1")
     
     if arquivo_pdf is not None:
         if not api_key:
-            st.warning("⚠️ Insira sua Chave de API do Gemini no campo acima para habilitar o leitor visual.")
+            st.warning("⚠️ Insira sua Chave de API do Gemini acima para habilitar o leitor visual.")
         else:
-            if st.button("Processar Dados com IA Visual", width="stretch"):
-                with st.spinner("A Inteligência Artificial está analisando a imagem do laudo..."):
+            if st.button("Processar Furo Selecionado com IA", width="stretch"):
+                with st.spinner(f"A IA está procurando e analisando o furo {nome_furo_desejado}..."):
                     try:
                         genai.configure(api_key=api_key)
                         modelo_visao = genai.GenerativeModel('gemini-3.6-flash')
@@ -117,13 +122,22 @@ with col_esq:
                         img = PILImage.open(io.BytesIO(img_data))
                         
                         lista_solos_str = ", ".join(OPCOES_SOLO)
+                        
+                        # PROMPT ATUALIZADO COM SELEÇÃO DE FURO
                         prompt = f"""
                         Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
-                        Leia a tabela desta imagem.
+                        Analise a imagem deste laudo de sondagem.
+                        
+                        TAREFA PRINCIPAL:
+                        Localize os dados referente EXCLUSIVAMENTE ao furo/sondagem identificado como "{nome_furo_desejado}".
+                        Se houver múltiplos furos na imagem, ignore os outros e extraia APENAS o "{nome_furo_desejado}".
+                        
+                        FORMATO DE SAÍDA:
                         Retorne os dados ESTRITAMENTE em formato CSV, sem markdown, sem explicações.
                         O cabeçalho deve ser exatamente: Profundidade (m);N_SPT;Tipo de Solo
+                        
                         Regras:
-                        1. Profundidade deve ser um número inteiro (1, 2, 3...) de 1 até o final do furo. Nunca falhe uma profundidade.
+                        1. Profundidade deve ser um número inteiro (1, 2, 3...) sequencial do furo "{nome_furo_desejado}".
                         2. N_SPT é o número de golpes final daquele metro (se for uma fração como 13/29, retorne apenas 13).
                         3. O Tipo de Solo deve ser ESCOLHIDO obrigatoriamente a partir desta lista: {lista_solos_str}. Aproxime se necessário.
                         Não escreva NENHUM texto além do formato CSV separado por ponto e vírgula (;).
@@ -140,32 +154,13 @@ with col_esq:
                         if len(df_ia) > 0:
                             st.session_state.tabela_spt = df_ia
                             st.session_state.imagem_sondagem = img_data
-                            st.success("✅ Laudo lido com perfeição pelo Gemini!")
+                            st.success(f"✅ Dados do furo {nome_furo_desejado} extraídos com sucesso!")
                             st.rerun()
                         else:
-                            st.error("A IA não conseguiu formatar os dados corretamente.")
+                            st.error(f"Não foi possível encontrar dados para o furo {nome_furo_desejado}.")
                             
                     except Exception as e:
                         st.error(f"Erro na análise visual: {e}")
-    st.markdown("---")
-
-    if "tabela_spt" not in st.session_state:
-        st.session_state.tabela_spt = pd.DataFrame({
-            "Profundidade (m)": list(range(1, 16)),
-            "N_SPT": [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24],
-            "Tipo de Solo": ["Aterro", "Aterro"] + ["Argila"] * 13
-        })
-
-    df_editado = st.data_editor(
-        st.session_state.tabela_spt,
-        column_config={
-            "Profundidade (m)": st.column_config.NumberColumn("Profundidade (m)", min_value=1, step=1),
-            "N_SPT": st.column_config.NumberColumn("N_SPT", min_value=1, max_value=100, step=1),
-            "Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)
-        },
-        num_rows="dynamic",
-        width="stretch"
-    )
     
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
