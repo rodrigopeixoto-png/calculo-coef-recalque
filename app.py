@@ -110,24 +110,46 @@ with col_esq:
                     furos_encontrados = {}
                     
                     def extrair_tabela(texto_furo):
-                        # Novo padrão tolerante: ignora os golpes intermediários de 15cm
-                        padrao_avancado = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(?:[\d.,/]+\s+)*?(\d{1,3})\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                        # Padrão super tolerante: captura "N_SPT", "Profundidade", e "Texto do Solo" ignorando o lixo antes
+                        # Ex: "11 12 1,00 Argila siltoarenosa" -> Pega 12, 1.00, Argila
+                        # Ex: "10/27 2,00 Silte" -> Pega 10, 2.00, Silte
+                        padrao_avancado = re.compile(r'(\d{1,3})(?:/\d{1,3})?\s+(\d{1,2}(?:[.,]\d{1,2})?)\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
                         achados = padrao_avancado.findall(texto_furo)
                         
-                        linhas_spt = []
-                        for prof, n_spt, solo_desc in achados:
+                        dict_spt = {}
+                        for n_spt_str, prof_str, solo_desc in achados:
+                            prof_float = float(prof_str.replace(',', '.'))
+                            prof_int = int(round(prof_float)) # 10,45m vira 10m
+                            
+                            if prof_int < 1: continue
+                            
                             solo_limpo = solo_desc.strip().title()
                             match = get_close_matches(solo_limpo, OPCOES_SOLO, n=1, cutoff=0.4)
                             solo_adotado = match[0] if match else "Argila"
-                            linhas_spt.append({
-                                "Profundidade (m)": float(prof.replace(',', '.')),
-                                "N_SPT": int(n_spt),
-                                "Tipo de Solo": solo_adotado
-                            })
-                        if linhas_spt:
-                            df_furo = pd.DataFrame(linhas_spt).sort_values("Profundidade (m)").drop_duplicates(subset="Profundidade (m)").reset_index(drop=True)
-                            df_furo["Profundidade (m)"] = range(1, len(df_furo) + 1)
-                            return df_furo
+                            
+                            if prof_int not in dict_spt:
+                                dict_spt[prof_int] = {
+                                    "Profundidade (m)": prof_int,
+                                    "N_SPT": int(n_spt_str),
+                                    "Tipo de Solo": solo_adotado
+                                }
+                                
+                        if dict_spt:
+                            max_prof = max(dict_spt.keys())
+                            lista_completa = []
+                            # Preenche de 1 até a profundidade máxima, tapando buracos se o PDF estiver falhado
+                            last_spt = 1
+                            last_solo = "Argila"
+                            for p in range(1, max_prof + 1):
+                                if p in dict_spt:
+                                    last_spt = dict_spt[p]["N_SPT"]
+                                    last_solo = dict_spt[p]["Tipo de Solo"]
+                                lista_completa.append({
+                                    "Profundidade (m)": p,
+                                    "N_SPT": last_spt,
+                                    "Tipo de Solo": last_solo
+                                })
+                            return pd.DataFrame(lista_completa)
                         return None
 
                     # Se achou furos no documento
@@ -191,7 +213,6 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
-
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
