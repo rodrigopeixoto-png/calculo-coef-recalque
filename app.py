@@ -110,8 +110,11 @@ with col_esq:
                     furos_encontrados = {}
                     padrao_spt = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(\d{1,2})\s+([A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
                     
-                   def extrair_tabela(texto_furo):
-                        achados = padrao_spt.findall(texto_furo)
+                  def extrair_tabela(texto_furo):
+                        # Novo padrão tolerante: ignora os golpes intermediários de 15cm
+                        padrao_avancado = re.compile(r'(?:^|\n)\s*(\d{1,2}(?:[.,]\d)?)\s+(?:[\d.,/]+\s+)*?(\d{1,3})\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ\s\-]+)')
+                        achados = padrao_avancado.findall(texto_furo)
+                        
                         linhas_spt = []
                         for prof, n_spt, solo_desc in achados:
                             solo_limpo = solo_desc.strip().title()
