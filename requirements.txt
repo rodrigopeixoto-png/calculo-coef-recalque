@@ -5,5 +5,5 @@ matplotlib
 reportlab
 pdfplumber
 google-generativeai
-pdf2image
+PyMuPDF
 pillow
