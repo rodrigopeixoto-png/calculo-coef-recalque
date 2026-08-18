@@ -111,29 +111,10 @@ with col_esq:
                         # 1. Configura a API do Gemini
                         genai.configure(api_key=api_key)
                         
-                        # =======================================================
-                        # RASTREADOR AUTOMÁTICO DE MODELOS DO GOOGLE
-                        # =======================================================
-                        modelos_disponiveis = []
-                        for m in genai.list_models():
-                            if 'generateContent' in m.supported_generation_methods:
-                                modelos_disponiveis.append(m.name.replace('models/', ''))
+                        # 2. Define EXATAMENTE o modelo mais recente exigido pelo Google
+                        modelo_visao = genai.GenerativeModel('gemini-3.6-flash')
                         
-                        if not modelos_disponiveis:
-                            st.error("❌ Sua chave é válida, mas não possui permissão para usar modelos de IA. Verifique o Google AI Studio.")
-                            st.stop()
-                            
-                        # Pega o primeiro modelo autorizado. Dá preferência aos modelos rápidos (flash ou vision)
-                        modelo_escolhido = modelos_disponiveis[0]
-                        for nome in modelos_disponiveis:
-                            if 'flash' in nome or 'vision' in nome:
-                                modelo_escolhido = nome
-                                break
-                                
-                        modelo_visao = genai.GenerativeModel(modelo_escolhido)
-                        # =======================================================
-                        
-                        # 2. Tira uma "Foto" da primeira página do PDF de forma segura
+                        # 3. Tira uma "Foto" da primeira página do PDF
                         import fitz
                         import PIL.Image
                         import io
@@ -145,7 +126,7 @@ with col_esq:
                         img_data = pix.tobytes("png")
                         img = PIL.Image.open(io.BytesIO(img_data))
                         
-                        # 3. Prompt restrito: Ensina a IA a agir como Engenheiro e gerar Tabela
+                        # 4. Prompt restrito: Ensina a IA a agir como Engenheiro
                         lista_solos_str = ", ".join(OPCOES_SOLO)
                         prompt = f"""
                         Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
@@ -159,21 +140,21 @@ with col_esq:
                         Não escreva NENHUM texto além do formato CSV separado por ponto e vírgula (;).
                         """
                         
-                        # 4. Chama a IA
+                        # 5. Chama a IA
                         resposta = modelo_visao.generate_content([prompt, img])
                         texto_csv = resposta.text.replace("```csv", "").replace("```", "").strip()
                         
-                        # 5. Converte a resposta instantaneamente em DataFrame (Tabela)
+                        # 6. Converte a resposta instantaneamente em DataFrame (Tabela)
                         df_ia = pd.read_csv(io.StringIO(texto_csv), sep=";")
                         
-                        # Limpeza para evitar erros matemáticos do usuário ou da IA
+                        # Limpeza para evitar erros matemáticos
                         df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                         df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
                         df_ia = df_ia.dropna(subset=['Profundidade (m)']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
                         
                         if len(df_ia) > 0:
                             st.session_state.tabela_spt = df_ia
-                            st.success(f"✅ Laudo lido com sucesso usando a IA: {modelo_escolhido}")
+                            st.success("✅ Laudo lido com perfeição pelo Gemini 3.6 Flash!")
                             st.rerun()
                         else:
                             st.error("A IA não conseguiu formatar os dados corretamente.")
@@ -201,6 +182,7 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
+    
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
