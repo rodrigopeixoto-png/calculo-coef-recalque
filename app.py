@@ -112,11 +112,18 @@ with col_esq:
                         genai.configure(api_key=api_key)
                         modelo_visao = genai.GenerativeModel('gemini-1.5-flash')
                         
-                        # 2. Tira uma "Foto" da primeira página do PDF
+                        # 2. Tira uma "Foto" da primeira página do PDF (importação segura isolada)
+                        import fitz
+                        import PIL.Image
+                        import io
+                        
                         doc = fitz.open(stream=arquivo_pdf.read(), filetype="pdf")
                         page = doc.load_page(0) 
                         pix = page.get_pixmap(dpi=150)
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        
+                        # Converte para foto de forma 100% segura
+                        img_data = pix.tobytes("png")
+                        img = PIL.Image.open(io.BytesIO(img_data))
                         
                         # 3. Prompt restrito: Ensina a IA a agir como Engenheiro e gerar Tabela
                         lista_solos_str = ", ".join(OPCOES_SOLO)
@@ -174,7 +181,6 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
-
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
