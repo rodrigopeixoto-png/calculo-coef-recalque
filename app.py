@@ -93,7 +93,7 @@ col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    st.info("🤖 **Leitor IA Visual:** Lê a imagem do laudo e extrai o furo selecionado!")
+    st.info("🤖 **Leitor IA Visual Multi-Páginas:** Analisa todas as folhas do laudo para encontrar o furo desejado!")
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     
     api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password")
@@ -102,34 +102,42 @@ with col_esq:
     with col_pdf:
         arquivo_pdf = st.file_uploader("📥 Importar Laudo (PDF)", type=["pdf"])
     with col_furo:
-        nome_furo_desejado = st.text_input("📌 Nome do Furo:", value="SP-01", help="Ex: SP-01, SP-02, Furo 1")
+        nome_furo_desejado = st.text_input("📌 Nome do Furo:", value="SP-03", help="Ex: SP-01, SP-02, SP-03")
     
     if arquivo_pdf is not None:
         if not api_key:
             st.warning("⚠️ Insira sua Chave de API do Gemini no campo acima para habilitar o leitor visual.")
         else:
             if st.button("Processar Furo Selecionado com IA", width="stretch"):
-                with st.spinner(f"A IA está procurando e analisando o furo {nome_furo_desejado}..."):
+                with st.spinner(f"Varrendo todas as páginas do laudo em busca do furo {nome_furo_desejado}..."):
                     try:
                         genai.configure(api_key=api_key)
                         modelo_visao = genai.GenerativeModel('gemini-3.6-flash')
                         
+                        # Garante leitura do início do arquivo
+                        arquivo_pdf.seek(0)
                         doc = fitz.open(stream=arquivo_pdf.read(), filetype="pdf")
-                        page = doc.load_page(0) 
-                        pix = page.get_pixmap(dpi=150)
                         
-                        img_data = pix.tobytes("png")
-                        img = PILImage.open(io.BytesIO(img_data))
+                        imgs = []
+                        img_bytes_list = []
+                        
+                        # Converte todas as páginas (até o limite de 15 páginas)
+                        for page_num in range(min(len(doc), 15)):
+                            page = doc.load_page(page_num)
+                            pix = page.get_pixmap(dpi=150)
+                            b_data = pix.tobytes("png")
+                            img_bytes_list.append(b_data)
+                            imgs.append(PILImage.open(io.BytesIO(b_data)))
                         
                         lista_solos_str = ", ".join(OPCOES_SOLO)
                         
                         prompt = f"""
                         Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
-                        Analise a imagem deste laudo de sondagem.
+                        Analise todas as páginas/imagens fornecidas deste laudo de sondagem.
                         
                         TAREFA PRINCIPAL:
-                        Localize os dados referente EXCLUSIVAMENTE ao furo/sondagem identificado como "{nome_furo_desejado}".
-                        Se houver múltiplos furos na imagem, ignore os outros e extraia APENAS o "{nome_furo_desejado}".
+                        Varra as imagens e localize os dados pertencentes EXCLUSIVAMENTE ao furo/sondagem identificado como "{nome_furo_desejado}".
+                        Se houver múltiplos furos nas imagens, ignore os outros e extraia APENAS o "{nome_furo_desejado}".
                         
                         FORMATO DE SAÍDA:
                         Retorne os dados ESTRITAMENTE em formato CSV, sem markdown, sem explicações.
@@ -142,7 +150,8 @@ with col_esq:
                         Não escreva NENHUM texto além do formato CSV separado por ponto e vírgula (;).
                         """
                         
-                        resposta = modelo_visao.generate_content([prompt, img])
+                        # Envia todas as imagens das páginas para a IA de uma só vez
+                        resposta = modelo_visao.generate_content([prompt] + imgs)
                         texto_csv = resposta.text.replace("```csv", "").replace("```", "").strip()
                         
                         df_ia = pd.read_csv(io.StringIO(texto_csv), sep=";")
@@ -152,7 +161,7 @@ with col_esq:
                         
                         if len(df_ia) > 0:
                             st.session_state.tabela_spt = df_ia
-                            st.session_state.imagem_sondagem = img_data
+                            st.session_state.imagem_sondagem = img_bytes_list[0]
                             st.success(f"✅ Dados do furo {nome_furo_desejado} extraídos com sucesso!")
                             st.rerun()
                         else:
