@@ -137,16 +137,25 @@ with col_esq:
             opcoes_furos = list(st.session_state["furos_map"].keys())
             furo_selecionado = st.selectbox("📌 Selecione o Furo Encontrado:", opcoes_furos)
             
+            page_idx = st.session_state["furos_map"][furo_selecionado]
+            
+            # ==============================================================
+            # NOVIDADE: PRÉ-VISUALIZAÇÃO DA PÁGINA PARA O USUÁRIO
+            # ==============================================================
+            with st.expander(f"👁️ Ver a página do PDF que será analisada (Página {page_idx + 1})"):
+                page_preview = doc.load_page(page_idx)
+                pix_preview = page_preview.get_pixmap(dpi=72)
+                st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), use_container_width=True)
+            
             if st.button("Processar Furo Selecionado com IA", width="stretch"):
                 if not api_key:
                     st.warning("⚠️ Insira sua Chave de API do Gemini no campo acima.")
                 else:
-                    with st.spinner(f"Analisando visualmente o furo {furo_selecionado} em Alta Definição..."):
+                    with st.spinner(f"Extraindo dados do {furo_selecionado}..."):
                         try:
                             genai.configure(api_key=api_key)
                             modelo_visao = genai.GenerativeModel('gemini-3.6-flash')
                             
-                            page_idx = st.session_state["furos_map"][furo_selecionado]
                             page = doc.load_page(page_idx)
                             pix = page.get_pixmap(dpi=300) 
                             b_data = pix.tobytes("png")
@@ -154,44 +163,40 @@ with col_esq:
                             
                             lista_solos_str = ", ".join(OPCOES_SOLO)
                             
-                            # PROMPT MODO TEXTO (Muito mais robusto para a IA)
                             prompt = f"""
-                            Você é um especialista em laudos de sondagem SPT brasileiros.
-                            Extraia os dados da tabela de sondagem desta imagem (furo {furo_selecionado}).
-
-                            Retorne ESTRITAMENTE em formato CSV separado por ponto e vírgula (;).
-                            O cabeçalho DEVE ser exatamente: Profundidade;N_SPT;Tipo de Solo
-
-                            REGRAS:
-                            1. Profundidade: apenas o número (1, 2, 3...).
-                            2. N_SPT: valor da coluna de golpes "2ª + 3ª". Se houver fração (ex: 13/29), coloque apenas 13.
-                            3. Tipo de Solo: classifique escolhendo EXATAMENTE uma destas opções: {lista_solos_str}
-
-                            Não escreva nenhuma explicação, não use markdown, devolva apenas as linhas do CSV.
+                            Por favor, leia a tabela de sondagem SPT presente nesta imagem.
+                            Extraia TODAS as linhas de profundidade (de 1 metro até o final).
+                            
+                            Para cada metro, identifique:
+                            1. A profundidade (apenas o número).
+                            2. O valor de N_SPT (número de golpes da coluna "2ª + 3ª"). Se for fração (ex: 13/29), pegue só o primeiro número (ex: 13).
+                            3. O tipo de solo. Escolha a opção que melhor descreve o material a partir desta lista exata: {lista_solos_str}.
+                            
+                            Escreva a resposta EXCLUSIVAMENTE em formato CSV, separado por ponto e vírgula (;), com o seguinte cabeçalho:
+                            Profundidade (m);N_SPT;Tipo de Solo
+                            
+                            Exemplo de como você deve responder:
+                            Profundidade (m);N_SPT;Tipo de Solo
+                            1;6;Aterro
+                            2;8;Areia
+                            3;14;Argila Silto-arenosa
                             """
                             
-                            # Chamada padrão sem restrição de JSON
                             resposta = modelo_visao.generate_content([prompt, img])
-                            
-                            # Limpeza da resposta caso a IA use blocos de código markdown
                             texto_limpo = resposta.text.replace("```csv", "").replace("```", "").strip()
                             
-                            # Converte o CSV puro para DataFrame
                             df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
                             
-                            # Força os nomes corretos caso a IA erre o cabeçalho
+                            # Normaliza colunas
                             df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
                             
-                            # ==============================================================
-                            # LIMPEZA BLINDADA: Arranca apenas os números (salva contra 1,00 ou 1m)
-                            # ==============================================================
+                            # Limpeza blindada dos números
                             df_ia['Profundidade (m)'] = df_ia['Profundidade (m)'].astype(str).str.replace(',', '.').str.extract(r'(\d+)')[0]
                             df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                             
                             df_ia['N_SPT'] = df_ia['N_SPT'].astype(str).str.extract(r'(\d+)')[0]
                             df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
                             
-                            # Remove linhas inúteis e converte pra inteiro
                             df_ia = df_ia.dropna(subset=['Profundidade (m)', 'N_SPT']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
                             
                             if len(df_ia) > 0:
@@ -200,9 +205,10 @@ with col_esq:
                                 st.success(f"✅ Furo {furo_selecionado} lido com sucesso!")
                                 st.rerun()
                             else:
-                                st.error("A IA não retornou linhas válidas para o furo.")
+                                st.error("A IA não retornou as linhas de dados.")
                                 with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
                                     st.text(texto_limpo)
+                                    st.info("Dica: Verifique no botão 👁️ acima se a página enviada realmente contém a tabela de sondagem. O arquivo pode possuir um mapa de locação ou capa que mencionava o nome do furo e confundiu o sistema.")
                                     
                         except Exception as e:
                             st.error(f"Erro na análise visual da IA: {e}")
