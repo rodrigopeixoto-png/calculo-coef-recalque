@@ -155,17 +155,22 @@ with col_esq:
                             lista_solos_str = ", ".join(OPCOES_SOLO)
                             
                             prompt = f"""
-                            Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT brasileiros.
-                            Analise a imagem desta página de laudo referente ao furo "{furo_selecionado}".
+                            Você é um especialista em laudos de sondagem SPT.
+                            A imagem enviada JÁ É a página exata do furo "{furo_selecionado}".
+                            Sua única tarefa é ler a tabela de Resistência à Penetração visível e extrair todas as linhas de dados metro a metro.
 
-                            INSTRUÇÕES DE EXTRAÇÃO METRO A METRO:
-                            1. "profundidade": Apenas o número inteiro de cada metro (ex: 1, 2, 3, 4...).
-                            2. "n_spt": Valor correspondente aos golpes dos últimos 30 cm (coluna "2ª + 3ª").
-                               - Se for um valor numérico simples (ex: 7, 26, 25), extraia o número.
-                               - Se for uma fração (ex: "13/29", "15/28", "10/28"), EXTRAIA APENAS O NUMERADOR (ex: 13, 15, 10).
-                            3. "tipo_solo": Analise a "Classificação do Material" e ESCOLHA OBRIGATORIAMENTE o melhor match a partir desta lista: {lista_solos_str}
+                            INSTRUÇÕES OBRIGATÓRIAS:
+                            1. "profundidade": Extraia apenas o número inteiro (ex: 1, 2, 3, 4...).
+                            2. "n_spt": Extraia o número de golpes da coluna "2ª + 3ª". 
+                               - ATENÇÃO: Se houver uma barra (ex: 13/29, 15/28), extraia APENAS o número ANTES da barra (ex: 13, 15).
+                            3. "tipo_solo": Leia a descrição do material e classifique escolhendo EXATAMENTE uma das opções: {lista_solos_str}
 
-                            Retorne uma LISTA DE OBJETOS JSON puros. Chaves exatas: "profundidade", "n_spt", "tipo_solo".
+                            Retorne ESTRITAMENTE um array JSON com os resultados. Exemplo de formato esperado:
+                            [
+                                {{"profundidade": 1, "n_spt": 7, "tipo_solo": "Silte Argiloso"}},
+                                {{"profundidade": 2, "n_spt": 26, "tipo_solo": "Argila Silto-arenosa"}}
+                            ]
+                            Extraia todas as linhas visíveis da tabela. NÃO retorne uma lista vazia.
                             """
                             
                             # Chamada nativa com retorno em JSON
