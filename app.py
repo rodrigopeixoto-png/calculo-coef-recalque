@@ -148,78 +148,50 @@ with col_esq:
                             
                             page_idx = st.session_state["furos_map"][furo_selecionado]
                             page = doc.load_page(page_idx)
-                            
-                            # =======================================================
-                            # MUDANÇA 1: Alta Resolução para a IA ler os números melhor
-                            # =======================================================
                             pix = page.get_pixmap(dpi=300) 
                             b_data = pix.tobytes("png")
                             img = PILImage.open(io.BytesIO(b_data))
                             
                             lista_solos_str = ", ".join(OPCOES_SOLO)
                             
-                            # =======================================================
-                            # MUDANÇA 2: Prompt simplificado e explicativo
-                            # =======================================================
+                            # PROMPT MODO TEXTO (Muito mais robusto para a IA)
                             prompt = f"""
-                            Extraia os dados da tabela de sondagem SPT visível na imagem.
+                            Você é um especialista em laudos de sondagem SPT brasileiros.
+                            Extraia os dados da tabela de sondagem desta imagem (furo {furo_selecionado}).
 
-                            Para CADA linha de profundidade da tabela, crie um objeto com:
-                            - "profundidade": O número do metro (1, 2, 3...).
-                            - "n_spt": O valor da coluna de golpes (2ª + 3ª). Se tiver barra (ex: 13/29), pegue só o primeiro número (13).
-                            - "tipo_solo": Classifique o material escolhendo EXATAMENTE uma destas opções: {lista_solos_str}
+                            Retorne ESTRITAMENTE em formato CSV separado por ponto e vírgula (;).
+                            O cabeçalho DEVE ser exatamente: Profundidade;N_SPT;Tipo de Solo
 
-                            Retorne APENAS um array JSON com os dados. Não retorne um array vazio.
-                            Exemplo:
-                            [
-                                {{"profundidade": 1, "n_spt": 7, "tipo_solo": "Silte Argiloso"}},
-                                {{"profundidade": 2, "n_spt": 15, "tipo_solo": "Argila Silto-arenosa"}}
-                            ]
+                            REGRAS:
+                            1. Profundidade: apenas o número (1, 2, 3...).
+                            2. N_SPT: valor da coluna de golpes "2ª + 3ª". Se houver fração (ex: 13/29), coloque apenas 13.
+                            3. Tipo de Solo: classifique escolhendo EXATAMENTE uma destas opções: {lista_solos_str}
+
+                            Não escreva nenhuma explicação, não use markdown, devolva apenas as linhas do CSV.
                             """
                             
-                            resposta = modelo_visao.generate_content(
-                                [prompt, img],
-                                generation_config={"response_mime_type": "application/json"}
-                            )
+                            # Chamada padrão sem restrição de JSON
+                            resposta = modelo_visao.generate_content([prompt, img])
                             
-                            texto_limpo = resposta.text.strip()
-                            dados_json = json.loads(texto_limpo)
+                            # Limpeza da resposta caso a IA use blocos de código markdown
+                            texto_limpo = resposta.text.replace("```csv", "").replace("```", "").strip()
                             
-                            # Desembrulha se a IA colocar dentro de um dict {"tabela": [...]}
-                            if isinstance(dados_json, dict):
-                                for val in dados_json.values():
-                                    if isinstance(val, list):
-                                        dados_json = val
-                                        break
-                                if isinstance(dados_json, dict):
-                                    dados_json = [dados_json] 
+                            # Converte o CSV puro para DataFrame
+                            df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
                             
-                            df_ia = pd.DataFrame(dados_json)
+                            # Força os nomes corretos caso a IA erre o cabeçalho
+                            df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
                             
-                            # Normalização flexível
-                            novas_colunas = {}
-                            for col in df_ia.columns:
-                                col_lower = str(col).lower()
-                                if "prof" in col_lower:
-                                    novas_colunas[col] = "Profundidade (m)"
-                                elif "spt" in col_lower or "golpe" in col_lower or "n_" in col_lower or col_lower == "n":
-                                    novas_colunas[col] = "N_SPT"
-                                elif "solo" in col_lower or "tipo" in col_lower or "material" in col_lower:
-                                    novas_colunas[col] = "Tipo de Solo"
-                                    
-                            df_ia = df_ia.rename(columns=novas_colunas)
-                            
-                            for col_req in ["Profundidade (m)", "N_SPT", "Tipo de Solo"]:
-                                if col_req not in df_ia.columns:
-                                    df_ia[col_req] = np.nan
-                            
-                            # Limpeza blindada dos números
+                            # ==============================================================
+                            # LIMPEZA BLINDADA: Arranca apenas os números (salva contra 1,00 ou 1m)
+                            # ==============================================================
                             df_ia['Profundidade (m)'] = df_ia['Profundidade (m)'].astype(str).str.replace(',', '.').str.extract(r'(\d+)')[0]
                             df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                             
                             df_ia['N_SPT'] = df_ia['N_SPT'].astype(str).str.extract(r'(\d+)')[0]
                             df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
                             
+                            # Remove linhas inúteis e converte pra inteiro
                             df_ia = df_ia.dropna(subset=['Profundidade (m)', 'N_SPT']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
                             
                             if len(df_ia) > 0:
@@ -230,10 +202,12 @@ with col_esq:
                             else:
                                 st.error("A IA não retornou linhas válidas para o furo.")
                                 with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
-                                    st.json(dados_json)
+                                    st.text(texto_limpo)
                                     
                         except Exception as e:
                             st.error(f"Erro na análise visual da IA: {e}")
+                            with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
+                                st.text(getattr(resposta, 'text', 'Sem resposta de texto'))
 
     st.markdown("---")
 
