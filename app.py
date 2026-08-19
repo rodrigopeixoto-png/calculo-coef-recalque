@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import io
 import re
 import json
+import os
+import datetime
 import pdfplumber
 from difflib import get_close_matches
 import google.generativeai as genai
@@ -49,13 +51,20 @@ FATORES_CONSTRUTIVOS = {
     "Raiz/Hélice": {"F1": 2.0, "F2": 4.0}
 }
 
-st.set_page_config(page_title="Dimensionamento de Estacas", page_icon="🏗️", layout="wide")
-st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
-st.caption("Leitor de PDF, Verificação Geotécnica, Esforços, Armação e Quantitativos")
+st.set_page_config(page_title="Dimensionamento de Estacas UTEA", page_icon="🏗️", layout="wide")
 
 # -----------------------------------------------------------------------------
-# SIDEBAR - PARÂMETROS
+# SIDEBAR - CABEÇALHO INSTITUCIONAL E PARÂMETROS
 # -----------------------------------------------------------------------------
+logo_path = "fundo_transparente_2.png"
+if os.path.exists(logo_path):
+    st.sidebar.image(logo_path, use_container_width=True)
+
+st.sidebar.header("📝 Identificação do Projeto")
+nome_obra = st.sidebar.text_input("Nome da Obra", value="Edificação Pública - Delegacia Cidadã")
+resp_tecnico = st.sidebar.text_input("Responsável Técnico", value="Eng. ")
+
+st.sidebar.markdown("---")
 st.sidebar.header("📋 Geometria da Fundação")
 tipo_fundacao = st.sidebar.selectbox("Tipo de Fundação", ["Profunda (Estaca)", "Rasa (Sapata/Radier)"])
 
@@ -86,6 +95,10 @@ st.sidebar.header("🔽 Esforços Atuantes (Topo)")
 carga_V = st.sidebar.number_input("Carga Vertical (kN)", min_value=0.0, value=250.0, step=50.0)
 carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value=20.0, step=5.0)
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
+
+# TÍTULO PRINCIPAL
+st.title("🏗️ Dimensionamento e Integração Solo-Estrutura")
+st.caption("Leitor de PDF, Verificação Geotécnica, Esforços, Armação e Quantitativos")
 
 # -----------------------------------------------------------------------------
 # TABELA DE SONDAGEM SPT E LEITOR DE PDF (ESCOLHA DE PÁGINA + IA VISUAL)
@@ -119,13 +132,11 @@ with col_esq:
             with col_pag:
                 pagina_selecionada = st.number_input(f"📄 Escolha a Página (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1)
             with col_furo:
-                nome_furo = st.text_input("📌 Nome do Furo (Opcional):", value="SP-")
+                nome_furo_desejado = st.text_input("📌 Nome do Furo (Opcional):", value="SP-")
                 
             page_idx = pagina_selecionada - 1
             
-            # ==============================================================
             # PRÉ-VISUALIZAÇÃO DA PÁGINA SELECIONADA
-            # ==============================================================
             with st.expander(f"👁️ Visualizar a Página {pagina_selecionada}", expanded=True):
                 page_preview = doc.load_page(page_idx)
                 pix_preview = page_preview.get_pixmap(dpi=72)
@@ -147,7 +158,6 @@ with col_esq:
                             
                             lista_solos_str = ", ".join(OPCOES_SOLO)
                             
-                            # PROMPT MODO TEXTO
                             prompt = f"""
                             Você é um especialista em laudos de sondagem SPT brasileiros.
                             Extraia os dados da tabela de sondagem desta imagem.
@@ -181,6 +191,7 @@ with col_esq:
                             if len(df_ia) > 0:
                                 st.session_state.tabela_spt = df_ia
                                 st.session_state.imagem_sondagem = b_data
+                                st.session_state.nome_furo_processado = nome_furo_desejado
                                 st.success(f"✅ Tabela lida com sucesso!")
                                 st.rerun()
                             else:
@@ -209,6 +220,7 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
+
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
@@ -555,12 +567,39 @@ def gerar_pdf():
     story = []
     styles = getSampleStyleSheet()
 
-    title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=15)
+    title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
     h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
     body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
 
+    # ---------------- CABEÇALHO TIMBRADO NO PDF ----------------
+    if os.path.exists(logo_path):
+        im = ReportLabImage(logo_path, width=150, height=60)
+        im.hAlign = 'LEFT'
+        data_atual = datetime.datetime.now().strftime("%d/%m/%Y")
+        
+        info_cabecalho = Paragraph(
+            f"<b>OBRA:</b> {nome_obra}<br/>"
+            f"<b>RESPONSÁVEL TÉCNICO:</b> {resp_tecnico}<br/>"
+            f"<b>DATA:</b> {data_atual}", 
+            ParagraphStyle('CabInfo', parent=body_style, alignment=2) # Alinhado à direita
+        )
+        
+        t_cab = Table([[im, info_cabecalho]], colWidths=[160, 340])
+        t_cab.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ]))
+        story.append(t_cab)
+        story.append(Spacer(1, 20))
+    else:
+        # Fallback caso a imagem não seja encontrada na hora de gerar
+        data_atual = datetime.datetime.now().strftime("%d/%m/%Y")
+        story.append(Paragraph(f"<b>OBRA:</b> {nome_obra}<br/><b>RESPONSÁVEL TÉCNICO:</b> {resp_tecnico}<br/><b>DATA:</b> {data_atual}", body_style))
+        story.append(Spacer(1, 15))
+    # -----------------------------------------------------------
+
     story.append(Paragraph("<b>MEMORIAL DE CÁLCULO DE FUNDAÇÕES</b>", title_style))
-    story.append(Paragraph("<b>Integração Solo-Estrutura, Verificação e Quantitativos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1, fontSize=10, leading=14)))
+    nome_furo_pdf = st.session_state.get('nome_furo_processado', 'SP-')
+    story.append(Paragraph(f"<b>Integração Solo-Estrutura, Verificação e Quantitativos (Furo: {nome_furo_pdf})</b>", ParagraphStyle('Sub', parent=body_style, alignment=1, fontSize=10, leading=14)))
     story.append(Spacer(1, 15))
 
     story.append(Paragraph("<b>1. Parâmetros Gerais e Solicitações</b>", h2_style))
@@ -628,7 +667,7 @@ def gerar_pdf():
     # ANEXO: IMAGEM DO BOLETIM DE SONDAGEM
     if "imagem_sondagem" in st.session_state and st.session_state.imagem_sondagem:
         story.append(Spacer(1, 15))
-        story.append(Paragraph("<b>Anexo: Perfil do Boletim de Sondagem SPT</b>", h2_style))
+        story.append(Paragraph("<b>Anexo: Perfil do Boletim de Sondagem SPT Analisado</b>", h2_style))
         story.append(Spacer(1, 10))
 
         img_buffer = io.BytesIO(st.session_state.imagem_sondagem)
@@ -649,10 +688,15 @@ def gerar_pdf():
 with col_dir:
     st.markdown("---")
     pdf_bytes = gerar_pdf()
+    
+    # Pega o nome do furo atualizado ou padrão para o nome do arquivo PDF
+    nome_arquivo_pdf = st.session_state.get('nome_furo_processado', 'Estaca')
+    nome_arquivo_pdf = re.sub(r'[^A-Za-z0-9_-]', '', nome_arquivo_pdf) # Remove caracteres especiais
+    
     st.download_button(
         label="📄 Baixar Memorial de Cálculo em PDF",
         data=pdf_bytes,
-        file_name=f"Memorial_Calculo_Estaca_B{B*100:.0f}cm.pdf",
+        file_name=f"Memorial_{nome_arquivo_pdf}_B{B*100:.0f}cm.pdf",
         mime="application/pdf",
         width="stretch"
     )
