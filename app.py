@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 import re
+import json
 import pdfplumber
 from difflib import get_close_matches
 import google.generativeai as genai
@@ -93,13 +94,13 @@ col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    st.info("🤖 **Leitor Híbrido:** O sistema detecta os furos do PDF e a IA analisa visualmente a página do furo escolhido.")
+    st.info("🤖 **Leitor Híbrido IA:** Detecta os furos do PDF e analisa a imagem da página do furo escolhido.")
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     
     api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password")
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
-    # 1. Tabela padrão na sessão caso ainda não exista
+    # Tabela inicial na sessão
     if "tabela_spt" not in st.session_state:
         st.session_state.tabela_spt = pd.DataFrame({
             "Profundidade (m)": list(range(1, 16)),
@@ -124,7 +125,6 @@ with col_esq:
                     if nome_limpo not in furos_map:
                         furos_map[nome_limpo] = page_num
             
-            # Se for PDF escaneado (sem texto detectável por regex), lista por páginas
             if not furos_map:
                 for p in range(len(doc)):
                     furos_map[f"Página {p+1}"] = p
@@ -153,29 +153,33 @@ with col_esq:
                             img = PILImage.open(io.BytesIO(b_data))
                             
                             lista_solos_str = ", ".join(OPCOES_SOLO)
+                            
                             prompt = f"""
-                            Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT.
-                            Analise a imagem desta página de laudo.
-                            
-                            TAREFA:
-                            Localize a tabela do furo "{furo_selecionado}" nesta página.
-                            Extraia metro a metro a profundidade, o N_SPT e o tipo de solo.
-                            
-                            FORMATO DE SAÍDA:
-                            Retorne os dados ESTRITAMENTE em formato CSV, sem markdown, sem explicações.
-                            O cabeçalho deve ser exatamente: Profundidade (m);N_SPT;Tipo de Solo
-                            
-                            Regras:
-                            1. Profundidade deve ser número inteiro sequencial (1, 2, 3...) do furo.
-                            2. N_SPT é o número de golpes final daquele metro (se houver fração como 13/29, use apenas 13).
-                            3. O Tipo de Solo deve ser ESCOLHIDO obrigatoriamente a partir desta lista: {lista_solos_str}. Aproxime se necessário.
-                            Não escreva NENHUM texto além do formato CSV separado por ponto e vírgula (;).
+                            Você é um engenheiro geotécnico especialista em ler laudos de sondagem SPT brasileiros.
+                            Analise a imagem desta página de laudo referente ao furo "{furo_selecionado}".
+
+                            INSTRUÇÕES DE EXTRAÇÃO METRO A METRO:
+                            1. "Profundidade (m)": Número inteiro sequencial de cada metro (1, 2, 3, 4, 5, 6, 7, 8, 9, 10...).
+                            2. "N_SPT": É o valor correspondente aos golpes dos últimos 30 cm (coluna "2ª + 3ª").
+                               - Se for um valor numérico simples (ex: 7, 26, 25), extraia o número.
+                               - Se for uma fração (ex: "13/29", "15/28", "10/28"), EXTRAIA APENAS O NUMERADOR (ex: 13, 15, 10).
+                            3. "Tipo de Solo": Analise a "Classificação do Material" para aquele metro e ESCOLHA OBRIGATORIAMENTE o solo mais correspondente desta lista:
+                               {lista_solos_str}
+
+                            Retorne uma LISTA DE OBJETOS JSON, onde cada objeto tem exatamente as chaves:
+                            "Profundidade (m)", "N_SPT", "Tipo de Solo"
                             """
                             
-                            resposta = modelo_visao.generate_content([prompt, img])
-                            texto_csv = resposta.text.replace("```csv", "").replace("```", "").strip()
+                            # Chamada nativa com retorno em JSON
+                            resposta = modelo_visao.generate_content(
+                                [prompt, img],
+                                generation_config={"response_mime_type": "application/json"}
+                            )
                             
-                            df_ia = pd.read_csv(io.StringIO(texto_csv), sep=";")
+                            dados_json = json.loads(resposta.text)
+                            df_ia = pd.DataFrame(dados_json)
+                            
+                            # Tratamento e limpeza dos tipos de dados
                             df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                             df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
                             df_ia = df_ia.dropna(subset=['Profundidade (m)']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
@@ -186,7 +190,7 @@ with col_esq:
                                 st.success(f"✅ Furo {furo_selecionado} lido com sucesso!")
                                 st.rerun()
                             else:
-                                st.error("A IA não conseguiu extrair os dados formatados do furo.")
+                                st.error("A IA não retornou linhas válidas para o furo.")
                         except Exception as e:
                             st.error(f"Erro na análise visual da IA: {e}")
 
