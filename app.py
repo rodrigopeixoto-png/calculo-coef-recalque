@@ -88,13 +88,13 @@ carga_H = st.sidebar.number_input("Força Horizontal (kN)", min_value=0.0, value
 carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=0.0, step=5.0)
 
 # -----------------------------------------------------------------------------
-# TABELA DE SONDAGEM SPT E LEITOR DE PDF HÍBRIDO (MAPEAMENTO + IA VISUAL)
+# TABELA DE SONDAGEM SPT E LEITOR DE PDF (ESCOLHA DE PÁGINA + IA VISUAL)
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 1])
 
 with col_esq:
     st.subheader("📑 Boletim de Sondagem SPT")
-    st.info("🤖 **Leitor Híbrido IA:** Detecta os furos do PDF e analisa a imagem da página do furo escolhido.")
+    st.info("🤖 **Leitor IA Visual:** Escolha a página do PDF que contém o gráfico e deixe a IA extrair a tabela.")
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     
     api_key = st.text_input("🔑 Insira sua API Key do Google Gemini:", type="password")
@@ -113,45 +113,29 @@ with col_esq:
             arquivo_pdf.seek(0)
             bytes_pdf = arquivo_pdf.read()
             doc = fitz.open(stream=bytes_pdf, filetype="pdf")
+            total_paginas = len(doc)
             
-            furos_map = {}
-            for page_num in range(len(doc)):
-                page_text = doc[page_num].get_text()
-                matches = re.findall(r'\b(SP\s*-\s*\d+|SP\s*\d+|Furo\s*[A-Z0-9\-]+)\b', page_text, re.IGNORECASE)
-                for m in matches:
-                    nome_limpo = re.sub(r'\s+', '', m.upper())
-                    if nome_limpo.startswith("SP") and "-" not in nome_limpo:
-                        nome_limpo = nome_limpo[:2] + "-" + nome_limpo[2:]
-                    if nome_limpo not in furos_map:
-                        furos_map[nome_limpo] = page_num
-            
-            if not furos_map:
-                for p in range(len(doc)):
-                    furos_map[f"Página {p+1}"] = p
-                    
-            st.session_state["furos_map"] = furos_map
-        except Exception as e:
-            st.error(f"Erro ao ler arquivo PDF: {e}")
-
-        if "furos_map" in st.session_state and st.session_state["furos_map"]:
-            opcoes_furos = list(st.session_state["furos_map"].keys())
-            furo_selecionado = st.selectbox("📌 Selecione o Furo Encontrado:", opcoes_furos)
-            
-            page_idx = st.session_state["furos_map"][furo_selecionado]
+            col_pag, col_furo = st.columns([1, 1])
+            with col_pag:
+                pagina_selecionada = st.number_input(f"📄 Escolha a Página (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1)
+            with col_furo:
+                nome_furo = st.text_input("📌 Nome do Furo (Opcional):", value="SP-")
+                
+            page_idx = pagina_selecionada - 1
             
             # ==============================================================
-            # NOVIDADE: PRÉ-VISUALIZAÇÃO DA PÁGINA PARA O USUÁRIO
+            # PRÉ-VISUALIZAÇÃO DA PÁGINA SELECIONADA
             # ==============================================================
-            with st.expander(f"👁️ Ver a página do PDF que será analisada (Página {page_idx + 1})"):
+            with st.expander(f"👁️ Visualizar a Página {pagina_selecionada}", expanded=True):
                 page_preview = doc.load_page(page_idx)
                 pix_preview = page_preview.get_pixmap(dpi=72)
                 st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), use_container_width=True)
             
-            if st.button("Processar Furo Selecionado com IA", width="stretch"):
+            if st.button("Processar Página com IA", width="stretch"):
                 if not api_key:
                     st.warning("⚠️ Insira sua Chave de API do Gemini no campo acima.")
                 else:
-                    with st.spinner(f"Extraindo dados do {furo_selecionado}..."):
+                    with st.spinner(f"A IA está lendo a tabela da página {pagina_selecionada}..."):
                         try:
                             genai.configure(api_key=api_key)
                             modelo_visao = genai.GenerativeModel('gemini-3.6-flash')
@@ -163,34 +147,29 @@ with col_esq:
                             
                             lista_solos_str = ", ".join(OPCOES_SOLO)
                             
+                            # PROMPT MODO TEXTO
                             prompt = f"""
-                            Por favor, leia a tabela de sondagem SPT presente nesta imagem.
-                            Extraia TODAS as linhas de profundidade (de 1 metro até o final).
-                            
-                            Para cada metro, identifique:
-                            1. A profundidade (apenas o número).
-                            2. O valor de N_SPT (número de golpes da coluna "2ª + 3ª"). Se for fração (ex: 13/29), pegue só o primeiro número (ex: 13).
-                            3. O tipo de solo. Escolha a opção que melhor descreve o material a partir desta lista exata: {lista_solos_str}.
-                            
-                            Escreva a resposta EXCLUSIVAMENTE em formato CSV, separado por ponto e vírgula (;), com o seguinte cabeçalho:
-                            Profundidade (m);N_SPT;Tipo de Solo
-                            
-                            Exemplo de como você deve responder:
-                            Profundidade (m);N_SPT;Tipo de Solo
-                            1;6;Aterro
-                            2;8;Areia
-                            3;14;Argila Silto-arenosa
+                            Você é um especialista em laudos de sondagem SPT brasileiros.
+                            Extraia os dados da tabela de sondagem desta imagem.
+
+                            Retorne ESTRITAMENTE em formato CSV separado por ponto e vírgula (;).
+                            O cabeçalho DEVE ser exatamente: Profundidade;N_SPT;Tipo de Solo
+
+                            REGRAS:
+                            1. Profundidade: apenas o número (1, 2, 3...).
+                            2. N_SPT: valor da coluna de golpes "2ª + 3ª". Se houver fração (ex: 13/29), coloque apenas o primeiro número (ex: 13).
+                            3. Tipo de Solo: classifique escolhendo EXATAMENTE uma destas opções: {lista_solos_str}
+
+                            Não escreva nenhuma explicação, não use markdown, devolva apenas as linhas do CSV.
                             """
                             
                             resposta = modelo_visao.generate_content([prompt, img])
                             texto_limpo = resposta.text.replace("```csv", "").replace("```", "").strip()
                             
                             df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
-                            
-                            # Normaliza colunas
                             df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
                             
-                            # Limpeza blindada dos números
+                            # LIMPEZA BLINDADA
                             df_ia['Profundidade (m)'] = df_ia['Profundidade (m)'].astype(str).str.replace(',', '.').str.extract(r'(\d+)')[0]
                             df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                             
@@ -202,18 +181,20 @@ with col_esq:
                             if len(df_ia) > 0:
                                 st.session_state.tabela_spt = df_ia
                                 st.session_state.imagem_sondagem = b_data
-                                st.success(f"✅ Furo {furo_selecionado} lido com sucesso!")
+                                st.success(f"✅ Tabela lida com sucesso!")
                                 st.rerun()
                             else:
-                                st.error("A IA não retornou as linhas de dados.")
+                                st.error("A IA não retornou linhas válidas para a página escolhida.")
                                 with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
                                     st.text(texto_limpo)
-                                    st.info("Dica: Verifique no botão 👁️ acima se a página enviada realmente contém a tabela de sondagem. O arquivo pode possuir um mapa de locação ou capa que mencionava o nome do furo e confundiu o sistema.")
                                     
                         except Exception as e:
                             st.error(f"Erro na análise visual da IA: {e}")
                             with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
                                 st.text(getattr(resposta, 'text', 'Sem resposta de texto'))
+                                
+        except Exception as e:
+            st.error(f"Erro ao processar PDF: {e}")
 
     st.markdown("---")
 
