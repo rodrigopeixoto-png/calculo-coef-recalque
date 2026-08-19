@@ -159,59 +159,63 @@ with col_esq:
                             Analise a imagem desta página de laudo referente ao furo "{furo_selecionado}".
 
                             INSTRUÇÕES DE EXTRAÇÃO METRO A METRO:
-                            1. "profundidade": Número inteiro sequencial de cada metro (1, 2, 3, 4, 5, 6, 7, 8, 9, 10...).
+                            1. "profundidade": Apenas o número inteiro de cada metro (ex: 1, 2, 3, 4...).
                             2. "n_spt": Valor correspondente aos golpes dos últimos 30 cm (coluna "2ª + 3ª").
                                - Se for um valor numérico simples (ex: 7, 26, 25), extraia o número.
                                - Se for uma fração (ex: "13/29", "15/28", "10/28"), EXTRAIA APENAS O NUMERADOR (ex: 13, 15, 10).
-                            3. "tipo_solo": Analise a "Classificação do Material" e ESCOLHIDO OBRIGATORIAMENTE a partir desta lista:
-                               {lista_solos_str}
+                            3. "tipo_solo": Analise a "Classificação do Material" e ESCOLHA OBRIGATORIAMENTE o melhor match a partir desta lista: {lista_solos_str}
 
-                            Retorne uma LISTA DE OBJETOS JSON com as chaves exatas: "profundidade", "n_spt", "tipo_solo".
+                            Retorne uma LISTA DE OBJETOS JSON puros. Chaves exatas: "profundidade", "n_spt", "tipo_solo".
                             """
                             
+                            # Chamada nativa com retorno em JSON
                             resposta = modelo_visao.generate_content(
                                 [prompt, img],
                                 generation_config={"response_mime_type": "application/json"}
                             )
                             
-                            dados_json = json.loads(resposta.text)
+                            texto_limpo = resposta.text.strip()
+                            dados_json = json.loads(texto_limpo)
                             
-                            # Trata se a IA envelopar em um objeto tipo {"dados": [...]} ou {"tabela": [...]}
+                            # Desembrulha se a IA colocar dentro de um dict {"tabela": [...]}
                             if isinstance(dados_json, dict):
                                 for val in dados_json.values():
                                     if isinstance(val, list):
                                         dados_json = val
                                         break
+                                if isinstance(dados_json, dict):
+                                    dados_json = [dados_json] # Força virar lista
                             
                             df_ia = pd.DataFrame(dados_json)
                             
-                            # Normalização flexível dos nomes de colunas retornados pela IA
+                            # Normalização flexível dos nomes de colunas
                             novas_colunas = {}
                             for col in df_ia.columns:
                                 col_lower = str(col).lower()
                                 if "prof" in col_lower:
                                     novas_colunas[col] = "Profundidade (m)"
-                                elif "spt" in col_lower or "golpe" in col_lower or "n_" in col_lower:
+                                elif "spt" in col_lower or "golpe" in col_lower or "n_" in col_lower or col_lower == "n":
                                     novas_colunas[col] = "N_SPT"
                                 elif "solo" in col_lower or "tipo" in col_lower or "material" in col_lower:
                                     novas_colunas[col] = "Tipo de Solo"
                                     
                             df_ia = df_ia.rename(columns=novas_colunas)
                             
-                            # Garante que as três colunas necessárias estejam presentes no DataFrame
+                            # Garante a existência das colunas
                             for col_req in ["Profundidade (m)", "N_SPT", "Tipo de Solo"]:
                                 if col_req not in df_ia.columns:
-                                    if col_req == "Profundidade (m)":
-                                        df_ia[col_req] = range(1, len(df_ia) + 1)
-                                    elif col_req == "N_SPT":
-                                        df_ia[col_req] = 1
-                                    elif col_req == "Tipo de Solo":
-                                        df_ia[col_req] = "Argila"
+                                    df_ia[col_req] = np.nan
                             
-                            # Limpeza e conversão dos tipos de dados
+                            # ==============================================================
+                            # LIMPEZA BLINDADA: Arranca apenas os números, ignorando vírgulas ou letras
+                            # ==============================================================
+                            df_ia['Profundidade (m)'] = df_ia['Profundidade (m)'].astype(str).str.replace(',', '.').str.extract(r'(\d+)')[0]
                             df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
+                            
+                            df_ia['N_SPT'] = df_ia['N_SPT'].astype(str).str.extract(r'(\d+)')[0]
                             df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
-                            df_ia = df_ia.dropna(subset=['Profundidade (m)']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
+                            
+                            df_ia = df_ia.dropna(subset=['Profundidade (m)', 'N_SPT']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
                             
                             if len(df_ia) > 0:
                                 st.session_state.tabela_spt = df_ia
@@ -220,6 +224,9 @@ with col_esq:
                                 st.rerun()
                             else:
                                 st.error("A IA não retornou linhas válidas para o furo.")
+                                with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
+                                    st.json(dados_json)
+                                    
                         except Exception as e:
                             st.error(f"Erro na análise visual da IA: {e}")
 
@@ -236,7 +243,6 @@ with col_esq:
         num_rows="dynamic",
         width="stretch"
     )
-
 # -----------------------------------------------------------------------------
 # CÁLCULOS DINÂMICOS (MOLAS E AOKI-VELLOSO CUMULATIVO)
 # -----------------------------------------------------------------------------
