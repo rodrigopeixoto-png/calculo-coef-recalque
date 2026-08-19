@@ -159,27 +159,56 @@ with col_esq:
                             Analise a imagem desta página de laudo referente ao furo "{furo_selecionado}".
 
                             INSTRUÇÕES DE EXTRAÇÃO METRO A METRO:
-                            1. "Profundidade (m)": Número inteiro sequencial de cada metro (1, 2, 3, 4, 5, 6, 7, 8, 9, 10...).
-                            2. "N_SPT": É o valor correspondente aos golpes dos últimos 30 cm (coluna "2ª + 3ª").
+                            1. "profundidade": Número inteiro sequencial de cada metro (1, 2, 3, 4, 5, 6, 7, 8, 9, 10...).
+                            2. "n_spt": Valor correspondente aos golpes dos últimos 30 cm (coluna "2ª + 3ª").
                                - Se for um valor numérico simples (ex: 7, 26, 25), extraia o número.
                                - Se for uma fração (ex: "13/29", "15/28", "10/28"), EXTRAIA APENAS O NUMERADOR (ex: 13, 15, 10).
-                            3. "Tipo de Solo": Analise a "Classificação do Material" para aquele metro e ESCOLHA OBRIGATORIAMENTE o solo mais correspondente desta lista:
+                            3. "tipo_solo": Analise a "Classificação do Material" e ESCOLHIDO OBRIGATORIAMENTE a partir desta lista:
                                {lista_solos_str}
 
-                            Retorne uma LISTA DE OBJETOS JSON, onde cada objeto tem exatamente as chaves:
-                            "Profundidade (m)", "N_SPT", "Tipo de Solo"
+                            Retorne uma LISTA DE OBJETOS JSON com as chaves exatas: "profundidade", "n_spt", "tipo_solo".
                             """
                             
-                            # Chamada nativa com retorno em JSON
                             resposta = modelo_visao.generate_content(
                                 [prompt, img],
                                 generation_config={"response_mime_type": "application/json"}
                             )
                             
                             dados_json = json.loads(resposta.text)
+                            
+                            # Trata se a IA envelopar em um objeto tipo {"dados": [...]} ou {"tabela": [...]}
+                            if isinstance(dados_json, dict):
+                                for val in dados_json.values():
+                                    if isinstance(val, list):
+                                        dados_json = val
+                                        break
+                            
                             df_ia = pd.DataFrame(dados_json)
                             
-                            # Tratamento e limpeza dos tipos de dados
+                            # Normalização flexível dos nomes de colunas retornados pela IA
+                            novas_colunas = {}
+                            for col in df_ia.columns:
+                                col_lower = str(col).lower()
+                                if "prof" in col_lower:
+                                    novas_colunas[col] = "Profundidade (m)"
+                                elif "spt" in col_lower or "golpe" in col_lower or "n_" in col_lower:
+                                    novas_colunas[col] = "N_SPT"
+                                elif "solo" in col_lower or "tipo" in col_lower or "material" in col_lower:
+                                    novas_colunas[col] = "Tipo de Solo"
+                                    
+                            df_ia = df_ia.rename(columns=novas_colunas)
+                            
+                            # Garante que as três colunas necessárias estejam presentes no DataFrame
+                            for col_req in ["Profundidade (m)", "N_SPT", "Tipo de Solo"]:
+                                if col_req not in df_ia.columns:
+                                    if col_req == "Profundidade (m)":
+                                        df_ia[col_req] = range(1, len(df_ia) + 1)
+                                    elif col_req == "N_SPT":
+                                        df_ia[col_req] = 1
+                                    elif col_req == "Tipo de Solo":
+                                        df_ia[col_req] = "Argila"
+                            
+                            # Limpeza e conversão dos tipos de dados
                             df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'], errors='coerce')
                             df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'], errors='coerce')
                             df_ia = df_ia.dropna(subset=['Profundidade (m)']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
