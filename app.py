@@ -51,10 +51,13 @@ FATORES_CONSTRUTIVOS = {
 st.set_page_config(page_title="Dimensionamento de Estacas UTEA", page_icon="🏗️", layout="wide")
 
 # -----------------------------------------------------------------------------
-# ESTADO DA APLICAÇÃO (CARRINHO DE FUROS)
+# ESTADO DA APLICAÇÃO (CARRINHO DE FUROS E CROQUI)
 # -----------------------------------------------------------------------------
 if 'projeto_furos' not in st.session_state:
     st.session_state.projeto_furos = {} 
+
+if 'croqui_img' not in st.session_state:
+    st.session_state.croqui_img = None
 
 if 'furo_atual_df' not in st.session_state:
     st.session_state.furo_atual_df = pd.DataFrame({
@@ -300,23 +303,24 @@ st.title("🏗️ Projeto Integrado de Fundações")
 st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Esforços e Memorial Completo")
 
 # -----------------------------------------------------------------------------
-# COLUNA ESQUERDA: IMPORTAÇÃO E IA (O "CARRINHO DE COMPRAS")
+# COLUNA ESQUERDA: IMPORTAÇÃO, IA E CROQUI
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 2])
 
 with col_esq:
-    st.subheader("📥 1. Adicionar Furo ao Projeto")
-    st.info("Escolha a página do PDF, use a IA para ler e salve no projeto geral.")
-    
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     api_key = st.text_input("🔑 API Key do Gemini (Obrigatório):", type="password")
-    arquivo_pdf = st.file_uploader("Importar Laudo (PDF)", type=["pdf"])
+    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
     if arquivo_pdf is not None:
         try:
             arquivo_pdf.seek(0)
             doc = fitz.open(stream=arquivo_pdf.read(), filetype="pdf")
             total_paginas = len(doc)
+            
+            st.markdown("---")
+            st.subheader("📥 1. Extrair Dados do Furo (Tabela)")
+            st.info("Escolha a página do PDF que contém a tabela, use a IA para extrair os dados e salve no projeto geral.")
             
             c1, c2 = st.columns([1, 1])
             with c1:
@@ -363,24 +367,44 @@ with col_esq:
                                 st.error("Tabela não reconhecida na imagem.")
                         except Exception as e:
                             st.error(f"Erro IA: {e}")
-                            
+            
+            st.write(f"**Revisão: {st.session_state.furo_atual_nome}**")
+            df_editado = st.data_editor(
+                st.session_state.furo_atual_df,
+                column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
+                num_rows="dynamic", width="stretch"
+            )
+            
+            if st.button(f"💾 Salvar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
+                st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
+                    "df": df_editado.copy(),
+                    "img": st.session_state.furo_atual_img
+                }
+                st.success(f"Furo {st.session_state.furo_atual_nome} adicionado ao projeto!")
+            
+            st.markdown("---")
+            # -------------------------------------------------------------
+            # ADIÇÃO DO CROQUI
+            # -------------------------------------------------------------
+            st.subheader("🗺️ 2. Adicionar Croqui de Locação")
+            st.info("Selecione a página do PDF que contém o mapa/croqui dos furos e guarde no projeto.")
+            
+            col_pag_c, col_btn_c = st.columns([1, 1])
+            with col_pag_c:
+                pag_croqui = st.number_input(f"Página do Croqui (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="num_croqui")
+            
+            with st.expander(f"👁️ Pré-visualizar Croqui (Página {pag_croqui})", expanded=False):
+                pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
+                st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), use_container_width=True)
+            
+            if st.button("💾 Salvar Página como Croqui", width="stretch"):
+                pix_high = doc.load_page(pag_croqui - 1).get_pixmap(dpi=300)
+                st.session_state.croqui_img = pix_high.tobytes("png")
+                st.success("Croqui guardado com sucesso!")
+                
         except Exception as e: st.error(f"Erro PDF: {e}")
 
     st.markdown("---")
-    st.write(f"**Revisão: {st.session_state.furo_atual_nome}**")
-    df_editado = st.data_editor(
-        st.session_state.furo_atual_df,
-        column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
-        num_rows="dynamic", width="stretch"
-    )
-    
-    if st.button(f"💾 Salvar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
-        st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
-            "df": df_editado.copy(),
-            "img": st.session_state.furo_atual_img
-        }
-        st.success(f"Furo {st.session_state.furo_atual_nome} adicionado ao projeto!")
-        
     if len(st.session_state.projeto_furos) > 0:
         if st.button("🗑️ Limpar Todos os Furos Salvos", width="stretch"):
             st.session_state.projeto_furos = {}
@@ -392,7 +416,7 @@ with col_esq:
 with col_dir:
     tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", "🔍 Análise Detalhada dos Furos"])
 
-    # ABA 1: RESUMO DO PROJETO
+    # ABA 1: RESUMO DO PROJETO E CROQUI
     with tab_resumo:
         st.subheader("Resumo dos Furos Salvos no Projeto")
         if len(st.session_state.projeto_furos) == 0:
@@ -434,12 +458,21 @@ with col_dir:
             elif media_spt_raso > 15:
                 recomendacao += "**Terreno superficial muito resistente:** Solo competente encontrado próximo à superfície. Viabilidade técnica para **Fundação Rasa (Sapatas/Radier)**.\n\n"
             else:
-                recomendacao += "**Terreno superficial intermediário:** Fazer verificação de viabilidade econômica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
+                recomendacao += "**Terreno superficial intermediário:** Fazer verificação de viabilidade económica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
                 
             if tem_na and nivel_agua < 5.0:
                 recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detectado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evitar estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz."
             
             st.info(recomendacao)
+            
+            # EXIBIÇÃO DO CROQUI NA ABA GERAL
+            if st.session_state.croqui_img is not None:
+                st.markdown("---")
+                st.markdown("### 🗺️ Croqui de Locação dos Furos")
+                st.image(st.session_state.croqui_img, use_container_width=True)
+                if st.button("🗑️ Remover Croqui"):
+                    st.session_state.croqui_img = None
+                    st.rerun()
             
     # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS
     with tab_atual:
@@ -466,7 +499,6 @@ with col_dir:
         # Gráficos Dinâmicos
         fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
         
-        # Gráfico 1: As 4 curvas de resistência
         ax1.plot(res_atual["df_inf"]["Rc Adm Aoki (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
         ax1.plot(res_atual["df_inf"]["Rc Adm DQ (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
         ax1.plot(res_atual["df_inf"]["Rc Adm Teix (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange", alpha=0.3)
@@ -477,14 +509,12 @@ with col_dir:
         ax1.grid(True, ls="--", alpha=0.5)
         ax1.legend(fontsize=8)
         
-        # Gráfico 2: Fletor
         ax2.plot(res_atual["m_flet"], res_atual["z_vals"], color="red")
         ax2.axvline(x=res_atual["M_rd"], color='darkred', linestyle='--')
         ax2.set_title("Momento Fletor")
         ax2.invert_yaxis()
         ax2.grid(True, ls="--", alpha=0.5)
         
-        # Gráfico 3: Elástica
         ax3.plot(res_atual["y_disp"]*1000, res_atual["z_vals"], color="blue")
         ax3.set_title("Elástica (mm)")
         ax3.invert_yaxis()
@@ -494,7 +524,7 @@ with col_dir:
         plt.close(fig_g)
 
 # -----------------------------------------------------------------------------
-# GERAÇÃO DO MEGA RELATÓRIO PDF COM OS 3 MÉTODOS
+# GERAÇÃO DO MEGA RELATÓRIO PDF COM OS 3 MÉTODOS E CROQUI
 # -----------------------------------------------------------------------------
 def gerar_pdf_multiprojeto():
     if len(st.session_state.projeto_furos) == 0: return None
@@ -535,11 +565,22 @@ def gerar_pdf_multiprojeto():
     story.append(t_res_geral)
     story.append(PageBreak())
 
-    # 3. LOOP DOS FUROS NO PDF
+    # 3. CROQUI (SE EXISTIR)
+    if st.session_state.croqui_img is not None:
+        story.append(Paragraph("<b>2. Croqui de Locação dos Furos</b>", h2_style))
+        story.append(Spacer(1, 10))
+        img_croqui_buffer = io.BytesIO(st.session_state.croqui_img)
+        story.append(ReportLabImage(img_croqui_buffer, width=500, height=650, kind='proportional'))
+        story.append(PageBreak())
+        num_seccao = 3
+    else:
+        num_seccao = 2
+
+    # 4. LOOP DOS FUROS NO PDF
     for nome_furo, dados in st.session_state.projeto_furos.items():
         res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
         
-        story.append(Paragraph(f"<b>ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
+        story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
         story.append(Spacer(1, 10))
         
         story.append(Paragraph("<b>Resumo da Capacidade de Carga (Três Métodos)</b>", h2_style))
@@ -596,6 +637,7 @@ def gerar_pdf_multiprojeto():
             story.append(ReportLabImage(img_buffer, width=400, height=600))
             
         story.append(PageBreak())
+        num_seccao += 1
 
     doc.build(story)
     pdf_buffer.seek(0)
