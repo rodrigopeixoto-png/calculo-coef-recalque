@@ -114,11 +114,25 @@ st.sidebar.markdown("---")
 st.sidebar.header("🔧 Detalhamento da Armadura")
 bitola = st.sidebar.selectbox("Bitola Longitudinal (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
 
+override_l = st.sidebar.checkbox("Ajustar Comprimento Manualmente?", value=False)
+L_armadura_manual = None
+if override_l:
+    limite_maximo = float(comprimento_estaca) if comprimento_estaca > 3.0 else 3.0
+    L_armadura_manual = st.sidebar.number_input(
+        "Comprimento da Gaiola (m)", 
+        min_value=3.0, 
+        max_value=limite_maximo, 
+        value=limite_maximo, 
+        step=0.5
+    )
+else:
+    st.sidebar.info("O comprimento da armadura será calculado automaticamente para cada furo conforme a norma.")
+
 
 # -----------------------------------------------------------------------------
 # FUNÇÃO NÚCLEO DE CÁLCULO (ENCAPSULADA PARA PROCESSAR MÚLTIPLOS FUROS)
 # -----------------------------------------------------------------------------
-def processar_calculos_estaca(df_original):
+def processar_calculos_estaca(df_original, l_arm_manual=None):
     df_spt = df_original.copy()
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -189,7 +203,10 @@ def processar_calculos_estaca(df_original):
     idx_nulo = np.where(m_apos_max <= M_cr)[0]
     z_momento_nulo = z_apos_max[idx_nulo[0]] if len(idx_nulo) > 0 else comprimento_estaca
 
+    # Define o comprimento da armadura (automático ou manual)
     L_armadura_calc = min(comprimento_estaca, max(max(3.0, 5 * B), z_momento_nulo + 0.40)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
+    if l_arm_manual is not None:
+        L_armadura_calc = float(l_arm_manual)
 
     area_barra = (np.pi * (bitola / 1000)**2) / 4  
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
@@ -223,10 +240,7 @@ with col_esq:
     st.subheader("📥 1. Adicionar Furo ao Projeto")
     st.info("Escolha a página do PDF, use a IA para ler e salve no projeto geral.")
     
-    # --- BASTA REINSERIR ESTA LINHA AQUI 👇 ---
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
-    # ------------------------------------------
-
     api_key = st.text_input("🔑 API Key do Gemini (Obrigatório):", type="password")
     arquivo_pdf = st.file_uploader("Importar Laudo (PDF)", type=["pdf"])
     
@@ -262,242 +276,4 @@ with col_esq:
                             Retorne apenas CSV separado por ponto e vírgula (;). Cabeçalho: Profundidade;N_SPT;Tipo de Solo
                             REGRAS: 1. Profundidade: apenas número. 2. N_SPT: golpes finais (se fração, só o numerador). 3. Tipo: {", ".join(OPCOES_SOLO)}"""
                             
-                            resp = modelo.generate_content([prompt, img]).text.replace("```csv", "").replace("```", "").strip()
-                            df_ia = pd.read_csv(io.StringIO(resp), sep=";")
-                            df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
-                            
-                            df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'].astype(str).str.replace(',', '.').str.extract(r'(\d+)')[0], errors='coerce')
-                            df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
-                            df_ia = df_ia.dropna(subset=['Profundidade (m)', 'N_SPT']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
-                            
-                            if len(df_ia) > 0:
-                                st.session_state.furo_atual_df = df_ia
-                                st.session_state.furo_atual_img = pix.tobytes("png")
-                                st.session_state.furo_atual_nome = nome_furo_input
-                                st.success("Tabela extraída! Confira os dados abaixo e clique em Salvar.")
-                            else:
-                                st.error("Tabela não reconhecida na imagem.")
-                        except Exception as e:
-                            st.error(f"Erro IA: {e}")
-                            
-        except Exception as e: st.error(f"Erro PDF: {e}")
-
-    st.markdown("---")
-    st.write(f"**Revisão: {st.session_state.furo_atual_nome}**")
-    df_editado = st.data_editor(
-        st.session_state.furo_atual_df,
-        column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
-        num_rows="dynamic", width="stretch"
-    )
-    
-    if st.button(f"💾 Salvar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
-        st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
-            "df": df_editado.copy(),
-            "img": st.session_state.furo_atual_img
-        }
-        st.success(f"Furo {st.session_state.furo_atual_nome} adicionado ao projeto!")
-        
-    if len(st.session_state.projeto_furos) > 0:
-        if st.button("🗑️ Limpar Todos os Furos Salvos", width="stretch"):
-            st.session_state.projeto_furos = {}
-            st.rerun()
-
-# -----------------------------------------------------------------------------
-# COLUNA DIREITA: ABAS DE RESULTADOS
-# -----------------------------------------------------------------------------
-with col_dir:
-    tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", f"🔍 Análise Individual ({st.session_state.furo_atual_nome})"])
-
-    # ABA 1: RESUMO DO PROJETO E RECOMENDAÇÃO AUTOMÁTICA
-    with tab_resumo:
-        st.subheader("Resumo dos Furos Salvos no Projeto")
-        if len(st.session_state.projeto_furos) == 0:
-            st.warning("Nenhum furo salvo ainda. Importe um PDF, extraia a tabela e clique em Salvar.")
-        else:
-            dados_resumo = []
-            todos_spt_rasos = []
-            
-            for nome_furo, dados in st.session_state.projeto_furos.items():
-                calc = processar_calculos_estaca(dados["df"])
-                df_furo = calc["df_spt"]
-                prof_max = df_furo["Profundidade (m)"].max()
-                spt_max = df_furo["N_SPT"].max()
-                
-                # Pega N_SPT dos primeiros 3 metros para avaliar fundação rasa
-                spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
-                if not pd.isna(spt_rasos): todos_spt_rasos.append(spt_rasos)
-                
-                status_geo = "✅ OK" if carga_V <= calc["Q_adm"] else "❌ FALHA"
-                
-                dados_resumo.append({
-                    "Furo": nome_furo,
-                    "Prof. Total (m)": prof_max,
-                    "Maior N_SPT": spt_max,
-                    "Carga Adm (kN)": f"{calc['Q_adm']:.1f}",
-                    "Status Atual": status_geo
-                })
-            
-            st.table(pd.DataFrame(dados_resumo))
-            
-            # MOTOR DE RECOMENDAÇÃO BASEADO EM REGRAS
-            st.markdown("### 🤖 Diagnóstico e Recomendação de Fundação")
-            recomendacao = ""
-            media_spt_raso = np.mean(todos_spt_rasos) if todos_spt_rasos else 0
-            
-            if media_spt_raso < 5:
-                recomendacao += "**Terreno superficial mole/fofo:** A média de N_SPT nos primeiros 3 metros é muito baixa. **Recomendada Fundação Profunda (Estacas)**.\n\n"
-            elif media_spt_raso > 15:
-                recomendacao += "**Terreno superficial muito resistente:** Solo competente encontrado próximo à superfície. Viabilidade técnica para **Fundação Rasa (Sapatas/Radier)**.\n\n"
-            else:
-                recomendacao += "**Terreno superficial intermediário:** Fazer verificação de viabilidade econômica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
-                
-            if tem_na and nivel_agua < 5.0:
-                recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detectado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evitar estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz para evitar desmoronamento do fuste."
-            
-            st.info(recomendacao)
-            
-    # ABA 2: ANÁLISE DO FURO ATUAL (PREVIEW)
-    with tab_atual:
-        st.write("Esta tela mostra o comportamento em tempo real do furo que está na tabela da esquerda.")
-        res_atual = processar_calculos_estaca(df_editado)
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Carga Adm (Geotécnica)", f"{res_atual['Q_adm']:,.1f} kN")
-        c2.metric("Momento Resistente (M_Rd)", f"{res_atual['M_rd']:.1f} kN.m")
-        c3.metric("Aço Total (Estaca)", f"{res_atual['peso_aco_total']:.1f} kg")
-        
-        # Gráficos Resumidos
-        fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(10, 4))
-        
-        ax1.plot(res_atual["df_inf"]["Rc Adm (kN)"], res_atual["df_inf"]["Profundidade (m)"], color="green", marker="D")
-        ax1.axvline(x=carga_V, color="red", linestyle="--")
-        ax1.set_title("Resistência Aoki (kN)")
-        ax1.invert_yaxis()
-        
-        ax2.plot(res_atual["m_flet"], res_atual["z_vals"], color="red")
-        ax2.axvline(x=res_atual["M_rd"], color='darkred', linestyle='--')
-        ax2.set_title("Momento Fletor")
-        ax2.invert_yaxis()
-        
-        ax3.plot(res_atual["y_disp"]*1000, res_atual["z_vals"], color="blue")
-        ax3.set_title("Elástica (mm)")
-        ax3.invert_yaxis()
-        
-        st.pyplot(fig_g)
-
-# -----------------------------------------------------------------------------
-# GERAÇÃO DO MEGA RELATÓRIO PDF
-# -----------------------------------------------------------------------------
-def gerar_pdf_multiprojeto():
-    if len(st.session_state.projeto_furos) == 0:
-        return None
-        
-    pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    story = []
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
-    h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
-    body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
-
-    # 1. CABEÇALHO E CAPA GERAL
-    if os.path.exists(logo_path):
-        im = ReportLabImage(logo_path, width=150, height=60)
-        im.hAlign = 'LEFT'
-        t_cab = Table([[im, Paragraph(f"<b>OBRA:</b> {nome_obra}<br/><b>RESP. TÉCNICO:</b> {resp_tecnico}<br/><b>DATA:</b> {datetime.datetime.now().strftime('%d/%m/%Y')}", ParagraphStyle('CabInfo', parent=body_style, alignment=2))]], colWidths=[160, 340])
-        t_cab.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-        story.append(t_cab)
-        story.append(Spacer(1, 20))
-        
-    story.append(Paragraph("<b>MEMORIAL DE CÁLCULO DE FUNDAÇÕES</b>", title_style))
-    story.append(Paragraph("<b>Projeto Geotécnico Consolidado - Múltiplos Furos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
-    story.append(Spacer(1, 15))
-
-    # 2. RESUMO DO PROJETO E RECOMENDAÇÃO
-    story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
-    story.append(Paragraph(recomendacao.replace('\n', '<br/>'), body_style))
-    story.append(Spacer(1, 10))
-    
-    dados_tab_resumo = [["Furo", "Prof. Final", "Maior SPT", "Rc Adm", "Status"]]
-    for f in dados_resumo:
-        dados_tab_resumo.append([f["Furo"], f"{f['Prof. Total (m)']}m", f['Maior N_SPT'], f"{f['Carga Adm (kN)']} kN", f['Status Atual']])
-        
-    t_res_geral = Table(dados_tab_resumo, colWidths=[100, 100, 100, 100, 100])
-    t_res_geral.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-    story.append(t_res_geral)
-    story.append(PageBreak())
-
-    # 3. LOOP PARA CADA FURO SALVO
-    for nome_furo, dados in st.session_state.projeto_furos.items():
-        res = processar_calculos_estaca(dados["df"])
-        
-        story.append(Paragraph(f"<b>ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
-        story.append(Spacer(1, 10))
-        
-        story.append(Paragraph("<b>Geometria e Quantitativos (Por Estaca)</b>", h2_style))
-        txt_res = f"<b>Q_adm:</b> {res['Q_adm']:.1f} kN | <b>M_Rd:</b> {res['M_rd']:.1f} kN.m | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
-        txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
-        txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg"
-        story.append(Paragraph(txt_res, body_style))
-        story.append(Spacer(1, 15))
-        
-        # GERAR GRÁFICOS DO FURO ESPECÍFICO
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
-        ax1.plot(res["df_inf"]["Rc Adm (kN)"], res["df_inf"]["Profundidade (m)"], label="Carga Adm", color="green")
-        ax1.axvline(x=carga_V, color='red', linestyle='--')
-        ax1.invert_yaxis(); ax1.set_title("Resistência Aoki"); ax1.grid(True, ls="--", alpha=0.5)
-        
-        ax2.plot(res["m_flet"], res["z_vals"], color="red")
-        ax2.axvline(x=res["M_rd"], color='darkred', linestyle='--')
-        ax2.invert_yaxis(); ax2.set_title("Momento Fletor"); ax2.grid(True, ls="--", alpha=0.5)
-        
-        ax3.plot(res["y_disp"]*1000, res["z_vals"], color="blue")
-        ax3.invert_yaxis(); ax3.set_title("Deslocamento (mm)"); ax3.grid(True, ls="--", alpha=0.5)
-        
-        buf_graf = io.BytesIO()
-        fig.savefig(buf_graf, format='png', dpi=150, bbox_inches='tight')
-        buf_graf.seek(0)
-        plt.close(fig) # Importante para não explodir a memória RAM
-        
-        story.append(ReportLabImage(buf_graf, width=500, height=130))
-        story.append(Spacer(1, 15))
-        
-        # TABELA DISCRETIZADA
-        story.append(Paragraph("<b>Tabela Metro a Metro</b>", h2_style))
-        data_tab = [["Prof(m)", "Solo", "N_SPT", "k_v", "k_h", "Rc Adm (kN)"]]
-        for idx, r in res["df_inf"].head(10).iterrows(): # Mostra os primeiros 10m no PDF para caber
-            data_tab.append([f"{r['Profundidade (m)']:.0f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['kv (kN/m³)']:,.0f}", f"{r['kh (kN/m³)']:,.0f}", f"{r['Rc Adm (kN)']:.1f}"])
-        t_m = Table(data_tab, colWidths=[50, 90, 50, 60, 60, 90])
-        t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-        story.append(t_m)
-        
-        # IMAGEM ORIGINAL DO FURO
-        if dados["img"] is not None:
-            story.append(PageBreak())
-            story.append(Paragraph(f"<b>Anexo Visual: Imagem Capturada do {nome_furo}</b>", h2_style))
-            img_buffer = io.BytesIO(dados["img"])
-            story.append(ReportLabImage(img_buffer, width=400, height=600))
-            
-        story.append(PageBreak())
-
-    doc.build(story)
-    pdf_buffer.seek(0)
-    return pdf_buffer.getvalue()
-
-st.sidebar.markdown("---")
-st.sidebar.header("📁 Geração do Relatório")
-if len(st.session_state.projeto_furos) > 0:
-    pdf_final_bytes = gerar_pdf_multiprojeto()
-    if pdf_final_bytes:
-        nome_arquivo_pdf = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20]
-        st.sidebar.download_button(
-            label="📄 Baixar Memorial Completo (PDF)",
-            data=pdf_final_bytes,
-            file_name=f"Memorial_Consolidado_{nome_arquivo_pdf}.pdf",
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True
-        )
-else:
-    st.sidebar.info("Salve furos no projeto para habilitar a geração do PDF.")
+                            resp = modelo.generate_content([prompt, img]).text.replace("```csv", "").replace("
