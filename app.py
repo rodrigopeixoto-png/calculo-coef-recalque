@@ -223,6 +223,10 @@ with col_esq:
     st.subheader("📥 1. Adicionar Furo ao Projeto")
     st.info("Escolha a página do PDF, use a IA para ler e salve no projeto geral.")
     
+    # --- BASTA REINSERIR ESTA LINHA AQUI 👇 ---
+    st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
+    # ------------------------------------------
+
     api_key = st.text_input("🔑 API Key do Gemini (Obrigatório):", type="password")
     arquivo_pdf = st.file_uploader("Importar Laudo (PDF)", type=["pdf"])
     
