@@ -312,7 +312,6 @@ col_esq, col_dir = st.columns([1.2, 2])
 with col_esq:
     st.subheader("📥 1. Dados do Furo de Sondagem")
     
-    # --- CORREÇÃO: NOME DO FURO SEMPRE DISPONÍVEL ---
     nome_furo_input = st.text_input("📌 Nome do Furo em Edição:", value=st.session_state.furo_atual_nome)
     
     st.info("Pode extrair a tabela usando a IA, capturar a imagem do perfil ou apenas preencher os dados à mão.")
@@ -338,14 +337,26 @@ with col_esq:
             
             with st.expander("👁️ Pré-visualizar Página Selecionada", expanded=True):
                 st.markdown(f"**Página atual:** {pagina_selecionada}")
+                # CORREÇÃO DA IMAGEM: AGORA USA OS BYTES DIRETAMENTE PARA O STREAMLIT ATUALIZAR SEMPRE
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
-                st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
+                st.image(pix_preview.tobytes("png"), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
             
-            c_btn1, c_btn2 = st.columns(2)
+            c_btn1, c_btn2, c_btn3 = st.columns([1.2, 1.2, 1])
             with c_btn1:
-                btn_ia = st.button("🤖 Ler Tabela com IA", use_container_width=True)
+                btn_ia = st.button("🤖 Ler Tabela IA", use_container_width=True)
             with c_btn2:
-                btn_manual = st.button("📸 Capturar Imagem (Manual)", use_container_width=True)
+                btn_manual = st.button("📸 Capturar Imagem", use_container_width=True)
+            with c_btn3:
+                btn_limpar = st.button("🧹 Zerar Tabela", use_container_width=True)
+                
+            # Lógica do Botão de Limpar Tabela
+            if btn_limpar:
+                st.session_state.furo_atual_df = pd.DataFrame({
+                    "Profundidade (m)": list(range(1, 16)),
+                    "N_SPT": [None] * 15,
+                    "Tipo de Solo": ["Argila"] * 15
+                })
+                st.rerun()
             
             if btn_ia:
                 if not api_key: st.warning("Insira a chave de API primeiro.")
@@ -394,7 +405,6 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
-    # Tabela fica sempre disponível para edição manual
     st.markdown("---")
     st.write(f"**Tabela de Preenchimento: {nome_furo_input}**")
     df_editado = st.data_editor(
@@ -426,7 +436,8 @@ with col_esq:
             with st.expander("👁️ Pré-visualizar Croqui", expanded=True):
                 st.markdown(f"**Página atual:** {pag_croqui}")
                 pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
-                st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), caption=f"Página do Croqui: {pag_croqui}", use_container_width=True)
+                # CORREÇÃO DA IMAGEM DO CROQUI (BYTES DIRETOS)
+                st.image(pix_croqui.tobytes("png"), caption=f"Página do Croqui: {pag_croqui}", use_container_width=True)
             
             if st.button("💾 Guardar Página como Croqui", width="stretch"):
                 pix_high = doc.load_page(pag_croqui - 1).get_pixmap(dpi=300)
