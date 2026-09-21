@@ -329,7 +329,8 @@ with col_esq:
             
             c1, c2 = st.columns([1, 1])
             with c1:
-                pagina_selecionada = st.number_input(f"Página do Perfil (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1)
+                # ADICIONADA UMA KEY PARA FORÇAR O REFRESH DA IMAGEM
+                pagina_selecionada = st.number_input(f"Página do Perfil (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="pag_perfil_input")
             with c2:
                 nome_furo_input = st.text_input("Nome do Furo:", value=st.session_state.furo_atual_nome)
                 
@@ -338,7 +339,8 @@ with col_esq:
             with st.expander("👁️ Pré-visualizar Página Selecionada", expanded=True):
                 st.markdown(f"**Página atual:** {pagina_selecionada}")
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
-                st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), use_container_width=True)
+                # ADICIONADA A CAPTION PARA QUE O STREAMLIT ATUALIZE A IMAGEM AO MUDAR O NÚMERO
+                st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
             
             c_btn1, c_btn2 = st.columns(2)
             with c_btn1:
@@ -425,7 +427,8 @@ with col_esq:
             with st.expander("👁️ Pré-visualizar Croqui", expanded=True):
                 st.markdown(f"**Página atual:** {pag_croqui}")
                 pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
-                st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), use_container_width=True)
+                # ADICIONADA A CAPTION AQUI TAMBÉM
+                st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), caption=f"Página do Croqui: {pag_croqui}", use_container_width=True)
             
             if st.button("💾 Guardar Página como Croqui", width="stretch"):
                 pix_high = doc.load_page(pag_croqui - 1).get_pixmap(dpi=300)
@@ -512,7 +515,7 @@ with col_dir:
                     st.session_state.croqui_img = None
                     st.rerun()
             
-    # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS (AGORA ATUALIZA COM NOME_FURO_INPUT EM TEMPO REAL)
+    # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS
     with tab_atual:
         furos_disponiveis = {f"{nome_furo_input} (Em Edição na Tabela)": df_editado}
         for k, v in st.session_state.projeto_furos.items():
