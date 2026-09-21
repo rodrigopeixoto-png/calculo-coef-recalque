@@ -281,7 +281,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
 
-    # CÁLCULOS ESTRUTURAIS RECUPERADOS (M_rd e H_rd)
     M_rd = n_barras * area_barra * ((fyk / 1.15) * 1000) * (0.75 * B if secao == "Circular" else 0.80 * B)
     H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
     
@@ -311,9 +310,16 @@ st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Es
 col_esq, col_dir = st.columns([1.2, 2])
 
 with col_esq:
+    st.subheader("📥 1. Dados do Furo de Sondagem")
+    
+    # --- CORREÇÃO: NOME DO FURO SEMPRE DISPONÍVEL ---
+    nome_furo_input = st.text_input("📌 Nome do Furo em Edição:", value=st.session_state.furo_atual_nome)
+    
+    st.info("Pode extrair a tabela usando a IA, capturar a imagem do perfil ou apenas preencher os dados à mão.")
+    
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     api_key = st.text_input("🔑 API Key do Gemini (Obrigatório para automação):", type="password")
-    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
+    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF) - Opcional", type=["pdf"])
     
     doc = None
     if arquivo_pdf is not None:
@@ -324,22 +330,15 @@ with col_esq:
             total_paginas = len(doc)
             
             st.markdown("---")
-            st.subheader("📥 1. Dados do Furo de Sondagem")
-            st.info("Pode extrair a tabela usando a IA ou capturar apenas a imagem do perfil e preencher os dados à mão.")
+            st.write("**Extração de Dados do PDF:**")
             
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                # ADICIONADA UMA KEY PARA FORÇAR O REFRESH DA IMAGEM
-                pagina_selecionada = st.number_input(f"Página do Perfil (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="pag_perfil_input")
-            with c2:
-                nome_furo_input = st.text_input("Nome do Furo:", value=st.session_state.furo_atual_nome)
+            pagina_selecionada = st.number_input(f"Página do Perfil (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="pag_perfil_input")
                 
             page_idx = pagina_selecionada - 1
             
             with st.expander("👁️ Pré-visualizar Página Selecionada", expanded=True):
                 st.markdown(f"**Página atual:** {pagina_selecionada}")
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
-                # ADICIONADA A CAPTION PARA QUE O STREAMLIT ATUALIZE A IMAGEM AO MUDAR O NÚMERO
                 st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
             
             c_btn1, c_btn2 = st.columns(2)
@@ -395,7 +394,7 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
-    # Tabela fica sempre disponível para edição manual, AGORA ATRELADA AO NOME EM TEMPO REAL
+    # Tabela fica sempre disponível para edição manual
     st.markdown("---")
     st.write(f"**Tabela de Preenchimento: {nome_furo_input}**")
     df_editado = st.data_editor(
@@ -427,7 +426,6 @@ with col_esq:
             with st.expander("👁️ Pré-visualizar Croqui", expanded=True):
                 st.markdown(f"**Página atual:** {pag_croqui}")
                 pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
-                # ADICIONADA A CAPTION AQUI TAMBÉM
                 st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), caption=f"Página do Croqui: {pag_croqui}", use_container_width=True)
             
             if st.button("💾 Guardar Página como Croqui", width="stretch"):
@@ -461,7 +459,7 @@ with col_dir:
     with tab_resumo:
         st.subheader("Resumo dos Furos Salvos no Projeto")
         if len(st.session_state.projeto_furos) == 0:
-            st.warning("Nenhum furo salvo ainda. Importe um PDF, extraia a tabela e clique em Salvar.")
+            st.warning("Nenhum furo salvo ainda. Preencha a tabela ao lado e clique em Guardar.")
             dados_resumo = []
             recomendacao = ""
         else:
