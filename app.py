@@ -309,7 +309,7 @@ col_esq, col_dir = st.columns([1.2, 2])
 
 with col_esq:
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
-    api_key = st.text_input("🔑 API Key do Gemini (Obrigatório):", type="password")
+    api_key = st.text_input("🔑 API Key do Gemini (Obrigatório para automação):", type="password")
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
     doc = None
@@ -321,12 +321,12 @@ with col_esq:
             total_paginas = len(doc)
             
             st.markdown("---")
-            st.subheader("📥 1. Extrair Dados do Furo (Tabela)")
-            st.info("Escolha a página do PDF que contém a tabela, use a IA para extrair os dados e salve no projeto geral.")
+            st.subheader("📥 1. Dados do Furo de Sondagem")
+            st.info("Pode extrair a tabela usando a IA ou capturar apenas a imagem do perfil e preencher os dados à mão.")
             
             c1, c2 = st.columns([1, 1])
             with c1:
-                pagina_selecionada = st.number_input(f"Página (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1)
+                pagina_selecionada = st.number_input(f"Página do Perfil (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1)
             with c2:
                 nome_furo_input = st.text_input("Nome do Furo:", value=st.session_state.furo_atual_nome)
                 
@@ -337,7 +337,13 @@ with col_esq:
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
                 st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), use_container_width=True)
             
-            if st.button("🤖 Ler Tabela com IA", width="stretch"):
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                btn_ia = st.button("🤖 Ler Tabela com IA", use_container_width=True)
+            with c_btn2:
+                btn_manual = st.button("📸 Capturar Imagem (Manual)", use_container_width=True)
+            
+            if btn_ia:
                 if not api_key: st.warning("Insira a chave de API primeiro.")
                 else:
                     with st.spinner("Lendo tabela..."):
@@ -370,34 +376,44 @@ with col_esq:
                                 st.error("Tabela não reconhecida na imagem.")
                         except Exception as e:
                             st.error(f"Erro IA: {e}")
+            
+            if btn_manual:
+                try:
+                    pix = doc.load_page(page_idx).get_pixmap(dpi=300)
+                    st.session_state.furo_atual_img = pix.tobytes("png")
+                    st.session_state.furo_atual_nome = nome_furo_input
+                    st.success("Imagem anexada com sucesso! Pode preencher a tabela abaixo e guardar.")
+                except Exception as e:
+                    st.error(f"Erro ao capturar a imagem: {e}")
                             
         except Exception as e: 
             st.error(f"Erro PDF: {e}")
             doc = None
 
-    # Tabela fica sempre disponível, com ou sem PDF
+    # Tabela fica sempre disponível para edição manual
     st.markdown("---")
-    st.write(f"**Revisão: {st.session_state.furo_atual_nome}**")
+    st.write(f"**Tabela de Preenchimento: {st.session_state.furo_atual_nome}**")
     df_editado = st.data_editor(
         st.session_state.furo_atual_df,
         column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
         num_rows="dynamic", width="stretch"
     )
     
-    if st.button(f"💾 Salvar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
+    if st.button(f"💾 Guardar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
         st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
             "df": df_editado.copy(),
             "img": st.session_state.furo_atual_img
         }
-        st.success(f"Furo {st.session_state.furo_atual_nome} adicionado ao projeto!")
+        st.success(f"Furo {st.session_state.furo_atual_nome} guardado e adicionado ao projeto!")
     
-    # Sessão de Croqui apenas se houver PDF
-    if arquivo_pdf is not None and doc is not None:
-        try:
-            st.markdown("---")
-            st.subheader("🗺️ 2. Adicionar Croqui de Locação")
-            st.info("Selecione a página do PDF que contém o mapa/croqui dos furos e guarde no projeto.")
-            
+    st.markdown("---")
+    st.subheader("🗺️ 2. Adicionar Croqui de Locação")
+    st.info("Pode extrair a página do PDF carregado ou fazer o upload de uma imagem solta.")
+    
+    modo_croqui = st.radio("Origem do Croqui:", ["Extrair do PDF", "Fazer Upload de Imagem (.png/.jpg)"], horizontal=True)
+    
+    if modo_croqui == "Extrair do PDF":
+        if arquivo_pdf is not None and doc is not None:
             col_pag_c, col_btn_c = st.columns([1, 1])
             with col_pag_c:
                 pag_croqui = st.number_input(f"Página do Croqui (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="num_croqui")
@@ -407,12 +423,20 @@ with col_esq:
                 pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
                 st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), use_container_width=True)
             
-            if st.button("💾 Salvar Página como Croqui", width="stretch"):
+            if st.button("💾 Guardar Página como Croqui", width="stretch"):
                 pix_high = doc.load_page(pag_croqui - 1).get_pixmap(dpi=300)
                 st.session_state.croqui_img = pix_high.tobytes("png")
-                st.success("Croqui guardado com sucesso!")
-        except Exception as e:
-            st.error(f"Erro ao processar croqui: {e}")
+                st.success("Croqui guardado com sucesso a partir do PDF!")
+        else:
+            st.warning("Importe um PDF acima primeiro para poder extrair a página.")
+            
+    else:
+        img_upload = st.file_uploader("Selecione o ficheiro do Croqui", type=["png", "jpg", "jpeg"])
+        if img_upload is not None:
+            st.image(img_upload, use_container_width=True)
+            if st.button("💾 Guardar Upload como Croqui", width="stretch"):
+                st.session_state.croqui_img = img_upload.getvalue()
+                st.success("Croqui guardado com sucesso a partir do upload!")
 
     st.markdown("---")
     if len(st.session_state.projeto_furos) > 0:
