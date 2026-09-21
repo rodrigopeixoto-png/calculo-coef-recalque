@@ -332,8 +332,7 @@ with col_esq:
                 
             page_idx = pagina_selecionada - 1
             
-           with st.expander("👁️ Pré-visualizar Página Selecionada", expanded=True):
-                st.markdown(f"**Página atual:** {pagina_selecionada}")
+            with st.expander(f"👁️ Pré-visualizar Página {pagina_selecionada}", expanded=False):
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
                 st.image(PILImage.open(io.BytesIO(pix_preview.tobytes("png"))), use_container_width=True)
             
@@ -402,8 +401,7 @@ with col_esq:
             with col_pag_c:
                 pag_croqui = st.number_input(f"Página do Croqui (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="num_croqui")
             
-           with st.expander("👁️ Pré-visualizar Croqui", expanded=True):
-                st.markdown(f"**Página atual:** {pag_croqui}")
+            with st.expander(f"👁️ Pré-visualizar Croqui (Página {pag_croqui})", expanded=False):
                 pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
                 st.image(PILImage.open(io.BytesIO(pix_croqui.tobytes("png"))), use_container_width=True)
             
