@@ -8,6 +8,7 @@ import json
 import os
 import datetime
 import fitz  # PyMuPDF
+import pdfplumber # Novo leitor OFFLINE
 from PIL import Image as PILImage
 import google.generativeai as genai
 
@@ -62,8 +63,8 @@ if 'croqui_img' not in st.session_state:
 if 'furo_atual_df' not in st.session_state:
     st.session_state.furo_atual_df = pd.DataFrame({
         "Profundidade (m)": list(range(1, 16)),
-        "N_SPT": [6, 8, 4, 5, 8, 11, 5, 7, 8, 11, 11, 12, 18, 21, 24],
-        "Tipo de Solo": ["Aterro", "Aterro"] + ["Argila"] * 13
+        "N_SPT": [None] * 15,
+        "Tipo de Solo": ["Argila"] * 15
     })
 if 'furo_atual_img' not in st.session_state:
     st.session_state.furo_atual_img = None
@@ -305,7 +306,7 @@ st.title("🏗️ Projeto Integrado de Fundações")
 st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Esforços e Memorial Completo")
 
 # -----------------------------------------------------------------------------
-# COLUNA ESQUERDA: IMPORTAÇÃO, IA E CROQUI
+# COLUNA ESQUERDA: IMPORTAÇÃO, IA, OFFLINE E CROQUI
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 2])
 
@@ -314,11 +315,10 @@ with col_esq:
     
     nome_furo_input = st.text_input("📌 Nome do Furo em Edição:", value=st.session_state.furo_atual_nome)
     
-    st.info("Pode extrair a tabela usando a IA, capturar a imagem do perfil ou apenas preencher os dados à mão.")
+    st.info("Para contornar os limites gratuitos da IA, experimente o nosso Leitor Offline ou copie e cole os dados diretamente do Excel na tabela!")
     
-    st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
-    api_key = st.text_input("🔑 API Key do Gemini (Obrigatório para automação):", type="password")
-    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF) - Opcional", type=["pdf"])
+    api_key = st.text_input("🔑 API Key do Gemini (Opcional se usar Offline ou Manual):", type="password")
+    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
     doc = None
     if arquivo_pdf is not None:
@@ -337,19 +337,20 @@ with col_esq:
             
             with st.expander("👁️ Pré-visualizar Página Selecionada", expanded=True):
                 st.markdown(f"**Página atual:** {pagina_selecionada}")
-                # CORREÇÃO DA IMAGEM: AGORA USA OS BYTES DIRETAMENTE PARA O STREAMLIT ATUALIZAR SEMPRE
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
                 st.image(pix_preview.tobytes("png"), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
             
-            c_btn1, c_btn2, c_btn3 = st.columns([1.2, 1.2, 1])
+            # --- OS 4 BOTÕES DE AÇÃO ---
+            c_btn1, c_btn2, c_btn3, c_btn4 = st.columns(4)
             with c_btn1:
-                btn_ia = st.button("🤖 Ler Tabela IA", use_container_width=True)
+                btn_ia = st.button("🤖 Ler IA (Limitado)", use_container_width=True, help="Usa o Google Gemini (20 leituras/dia)")
             with c_btn2:
-                btn_manual = st.button("📸 Capturar Imagem", use_container_width=True)
+                btn_offline = st.button("🔌 Ler Offline (Ilimitado)", use_container_width=True, help="Lê o texto nativo do PDF sem internet usando pdfplumber")
             with c_btn3:
-                btn_limpar = st.button("🧹 Zerar Tabela", use_container_width=True)
+                btn_manual = st.button("📸 Imagem (Manual)", use_container_width=True, help="Captura apenas o recorte da imagem")
+            with c_btn4:
+                btn_limpar = st.button("🧹 Zerar Tabela", use_container_width=True, help="Limpa a tabela para editar um furo novo")
                 
-            # Lógica do Botão de Limpar Tabela
             if btn_limpar:
                 st.session_state.furo_atual_df = pd.DataFrame({
                     "Profundidade (m)": list(range(1, 16)),
@@ -357,11 +358,59 @@ with col_esq:
                     "Tipo de Solo": ["Argila"] * 15
                 })
                 st.rerun()
+                
+            if btn_offline:
+                with st.spinner("Analisando o PDF localmente sem internet..."):
+                    try:
+                        arquivo_pdf.seek(0)
+                        with pdfplumber.open(arquivo_pdf) as pdf:
+                            page_plumber = pdf.pages[page_idx]
+                            texto_pdf = page_plumber.extract_text()
+                            
+                            if not texto_pdf or len(texto_pdf.strip()) < 10:
+                                st.error("⚠️ O PDF parece ser uma imagem escaneada. O leitor offline precisa de um PDF digital (com texto selecionável). Use o botão 'Imagem (Manual)' e cole do Excel.")
+                            else:
+                                linhas = texto_pdf.split('\n')
+                                prof_esperada = 1
+                                dados_offline = []
+                                
+                                for linha in linhas:
+                                    # Procura o número da profundidade (Ex: 1, 1.0, 1,00) isolado
+                                    match = re.search(rf"^\s*0*{prof_esperada}(?:[,.]0+)?\s+([\d\s/]+)", linha)
+                                    if not match:
+                                        # Tenta achar no meio do texto caso a tabela seja diferente
+                                        match = re.search(rf"\s+0*{prof_esperada}(?:[,.]0+)?\s+([\d\s/]+)", linha)
+                                        
+                                    if match:
+                                        numeros_str = match.group(1)
+                                        nums = re.findall(r'\b\d+\b', numeros_str)
+                                        if nums:
+                                            n_spt = int(nums[-1]) # Pega o último número do bloco numérico como N_SPT
+                                            if n_spt > 60: n_spt = 60 # Trava lógica
+                                            dados_offline.append([prof_esperada, n_spt, "Argila"])
+                                            prof_esperada += 1
+                                            
+                                if len(dados_offline) > 0:
+                                    df_off = pd.DataFrame(dados_offline, columns=["Profundidade (m)", "N_SPT", "Tipo de Solo"])
+                                    # Preenche o resto com vazio até 15 metros para ficar bonito na tabela
+                                    while len(df_off) < 15:
+                                        df_off.loc[len(df_off)] = [len(df_off)+1, None, "Argila"]
+                                        
+                                    st.session_state.furo_atual_df = df_off
+                                    pix = doc.load_page(page_idx).get_pixmap(dpi=300)
+                                    st.session_state.furo_atual_img = pix.tobytes("png")
+                                    st.session_state.furo_atual_nome = nome_furo_input
+                                    st.success(f"Extração offline concluída! Foram lidos {len(dados_offline)} metros.")
+                                    st.rerun()
+                                else:
+                                    st.warning("O formato visual desta tabela é complexo para o leitor offline básico. Use o modo 'Imagem (Manual)' e cole os números diretamente do seu Excel!")
+                    except Exception as e:
+                        st.error(f"Erro na extração offline: {e}")
             
             if btn_ia:
                 if not api_key: st.warning("Insira a chave de API primeiro.")
                 else:
-                    with st.spinner("Lendo tabela..."):
+                    with st.spinner("Lendo tabela na nuvem..."):
                         try:
                             genai.configure(api_key=api_key)
                             modelo = genai.GenerativeModel('gemini-3.6-flash')
@@ -386,9 +435,10 @@ with col_esq:
                                 st.session_state.furo_atual_df = df_ia
                                 st.session_state.furo_atual_img = pix.tobytes("png")
                                 st.session_state.furo_atual_nome = nome_furo_input
-                                st.success("Tabela extraída! Confira os dados abaixo e clique em Salvar.")
+                                st.success("Tabela extraída via IA com sucesso!")
+                                st.rerun()
                             else:
-                                st.error("Tabela não reconhecida na imagem.")
+                                st.error("A IA não reconheceu a tabela na imagem.")
                         except Exception as e:
                             st.error(f"Erro IA: {e}")
             
@@ -397,7 +447,7 @@ with col_esq:
                     pix = doc.load_page(page_idx).get_pixmap(dpi=300)
                     st.session_state.furo_atual_img = pix.tobytes("png")
                     st.session_state.furo_atual_nome = nome_furo_input
-                    st.success("Imagem anexada com sucesso! Pode preencher a tabela abaixo e guardar.")
+                    st.success("Imagem anexada ao furo atual! Preencha a tabela abaixo à mão ou cole do Excel (Ctrl+V).")
                 except Exception as e:
                     st.error(f"Erro ao capturar a imagem: {e}")
                             
@@ -405,8 +455,9 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
+    # Tabela de Edição / Copy-Paste do Excel
     st.markdown("---")
-    st.write(f"**Tabela de Preenchimento: {nome_furo_input}**")
+    st.write(f"**Tabela de Preenchimento: {nome_furo_input}** (Aceita Colar do Excel)")
     df_editado = st.data_editor(
         st.session_state.furo_atual_df,
         column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
@@ -436,7 +487,6 @@ with col_esq:
             with st.expander("👁️ Pré-visualizar Croqui", expanded=True):
                 st.markdown(f"**Página atual:** {pag_croqui}")
                 pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
-                # CORREÇÃO DA IMAGEM DO CROQUI (BYTES DIRETOS)
                 st.image(pix_croqui.tobytes("png"), caption=f"Página do Croqui: {pag_croqui}", use_container_width=True)
             
             if st.button("💾 Guardar Página como Croqui", width="stretch"):
