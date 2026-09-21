@@ -8,7 +8,7 @@ import json
 import os
 import datetime
 import fitz  # PyMuPDF
-import pdfplumber # Novo leitor OFFLINE
+import pdfplumber # Leitor OFFLINE (Extração Relâmpago)
 from PIL import Image as PILImage
 import google.generativeai as genai
 
@@ -317,7 +317,9 @@ with col_esq:
     
     st.info("Para contornar os limites gratuitos da IA, experimente o nosso Leitor Offline ou copie e cole os dados diretamente do Excel na tabela!")
     
+    st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
     api_key = st.text_input("🔑 API Key do Gemini (Opcional se usar Offline ou Manual):", type="password")
+    
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
     doc = None
@@ -340,12 +342,11 @@ with col_esq:
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
                 st.image(pix_preview.tobytes("png"), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
             
-            # --- OS 4 BOTÕES DE AÇÃO ---
             c_btn1, c_btn2, c_btn3, c_btn4 = st.columns(4)
             with c_btn1:
                 btn_ia = st.button("🤖 Ler IA (Limitado)", use_container_width=True, help="Usa o Google Gemini (20 leituras/dia)")
             with c_btn2:
-                btn_offline = st.button("🔌 Ler Offline (Ilimitado)", use_container_width=True, help="Lê o texto nativo do PDF sem internet usando pdfplumber")
+                btn_offline = st.button("⚡ Extração Relâmpago (Nativa)", use_container_width=True, help="Lê o texto nativo do PDF sem internet usando pdfplumber")
             with c_btn3:
                 btn_manual = st.button("📸 Imagem (Manual)", use_container_width=True, help="Captura apenas o recorte da imagem")
             with c_btn4:
@@ -375,24 +376,21 @@ with col_esq:
                                 dados_offline = []
                                 
                                 for linha in linhas:
-                                    # Procura o número da profundidade (Ex: 1, 1.0, 1,00) isolado
                                     match = re.search(rf"^\s*0*{prof_esperada}(?:[,.]0+)?\s+([\d\s/]+)", linha)
                                     if not match:
-                                        # Tenta achar no meio do texto caso a tabela seja diferente
                                         match = re.search(rf"\s+0*{prof_esperada}(?:[,.]0+)?\s+([\d\s/]+)", linha)
                                         
                                     if match:
                                         numeros_str = match.group(1)
                                         nums = re.findall(r'\b\d+\b', numeros_str)
                                         if nums:
-                                            n_spt = int(nums[-1]) # Pega o último número do bloco numérico como N_SPT
-                                            if n_spt > 60: n_spt = 60 # Trava lógica
+                                            n_spt = int(nums[-1]) 
+                                            if n_spt > 60: n_spt = 60 
                                             dados_offline.append([prof_esperada, n_spt, "Argila"])
                                             prof_esperada += 1
                                             
                                 if len(dados_offline) > 0:
                                     df_off = pd.DataFrame(dados_offline, columns=["Profundidade (m)", "N_SPT", "Tipo de Solo"])
-                                    # Preenche o resto com vazio até 15 metros para ficar bonito na tabela
                                     while len(df_off) < 15:
                                         df_off.loc[len(df_off)] = [len(df_off)+1, None, "Argila"]
                                         
@@ -400,7 +398,7 @@ with col_esq:
                                     pix = doc.load_page(page_idx).get_pixmap(dpi=300)
                                     st.session_state.furo_atual_img = pix.tobytes("png")
                                     st.session_state.furo_atual_nome = nome_furo_input
-                                    st.success(f"Extração offline concluída! Foram lidos {len(dados_offline)} metros.")
+                                    st.success(f"Extração relâmpago concluída! Foram lidos {len(dados_offline)} metros.")
                                     st.rerun()
                                 else:
                                     st.warning("O formato visual desta tabela é complexo para o leitor offline básico. Use o modo 'Imagem (Manual)' e cole os números diretamente do seu Excel!")
@@ -565,7 +563,6 @@ with col_dir:
             
             st.info(recomendacao)
             
-            # EXIBIÇÃO DO CROQUI NA ABA GERAL
             if st.session_state.croqui_img is not None:
                 st.markdown("---")
                 st.markdown("### 🗺️ Croqui de Locação dos Furos")
@@ -596,6 +593,11 @@ with col_dir:
         e2.metric("H_Rd (Horiz. Máx)", f"{res_atual['H_rd']:.1f} kN")
         e3.metric("Desloc. Topo", f"{res_atual['deslocamento_max_mm']:.2f} mm")
         e4.metric("Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
+        
+        st.markdown("### ⚙️ Interação Solo-Estrutura")
+        m1, m2 = st.columns(2)
+        m1.metric("Coef. de Mola Horizontal (K_h)", f"{res_atual['kh_global']:,.0f} kN/m³")
+        m2.metric("Coef. de Mola Vertical (K_v)", f"{res_atual['kv_global']:,.0f} kN/m³")
         
         # Gráficos Dinâmicos
         fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
@@ -690,10 +692,11 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph(txt_cap, body_style))
         story.append(Spacer(1, 5))
         
-        story.append(Paragraph("<b>Geometria e Quantitativos (Por Estaca)</b>", h2_style))
+        story.append(Paragraph("<b>Geometria, Quantitativos e Solo-Estrutura</b>", h2_style))
         txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>H_Rd (Força Horiz. Máx):</b> {res['H_rd']:.1f} kN | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
         txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
-        txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg"
+        txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg<br/>"
+        txt_res += f"<b>K_h Global:</b> {res['kh_global']:,.0f} kN/m³ | <b>K_v Global:</b> {res['kv_global']:,.0f} kN/m³"
         story.append(Paragraph(txt_res, body_style))
         story.append(Spacer(1, 15))
         
