@@ -281,7 +281,10 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
 
+    # CÁLCULOS ESTRUTURAIS RECUPERADOS (M_rd e H_rd)
     M_rd = n_barras * area_barra * ((fyk / 1.15) * 1000) * (0.75 * B if secao == "Circular" else 0.80 * B)
+    H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
+    
     V_concreto = Area_c * comprimento_estaca
     peso_long = n_barras * area_barra * L_armadura_calc * 7850
     peso_estribo = int(L_armadura_calc / 0.15) * (np.pi * (B - 0.08) if secao == "Circular" else 4 * (B - 0.08)) * ((np.pi * (6.3 / 1000)**2) / 4) * 7850
@@ -292,7 +295,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "Q_adm_aoki": Q_adm_aoki, "Q_adm_dq": Q_adm_dq, "Q_adm_t": Q_adm_t, "Q_adm_media": Q_adm_media,
         "Q_adm_adotada": Q_adm_adotada,
         "kv_global": kv_global, "kh_global": kh_global,
-        "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "deslocamento_max_mm": deslocamento_max_mm,
+        "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
         "L_armadura": L_armadura_calc, "n_barras": n_barras, "V_concreto": V_concreto, "peso_aco_total": peso_aco_total,
         "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr
     }
@@ -525,10 +528,11 @@ with col_dir:
         c4.metric("Teixeira", f"{res_atual['Q_adm_t']:,.1f} kN")
         
         st.markdown("### 🏗️ Estrutural e Quantitativos")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Momento Resistente", f"{res_atual['M_rd']:.1f} kN.m")
-        c2.metric("Comprimento Gaiola", f"{res_atual['L_armadura']:.2f} m")
-        c3.metric("Aço Total (Estaca)", f"{res_atual['peso_aco_total']:.1f} kg")
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("M_Rd (Momento)", f"{res_atual['M_rd']:.1f} kN.m")
+        e2.metric("H_Rd (Horiz. Máx)", f"{res_atual['H_rd']:.1f} kN")
+        e3.metric("Desloc. Topo", f"{res_atual['deslocamento_max_mm']:.2f} mm")
+        e4.metric("Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
         
         # Gráficos Dinâmicos
         fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
@@ -624,7 +628,7 @@ def gerar_pdf_multiprojeto():
         story.append(Spacer(1, 5))
         
         story.append(Paragraph("<b>Geometria e Quantitativos (Por Estaca)</b>", h2_style))
-        txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
+        txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>H_Rd (Força Horiz. Máx):</b> {res['H_rd']:.1f} kN | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
         txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
         txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg"
         story.append(Paragraph(txt_res, body_style))
