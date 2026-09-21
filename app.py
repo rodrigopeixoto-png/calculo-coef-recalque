@@ -54,7 +54,7 @@ st.set_page_config(page_title="Dimensionamento de Estacas UTEA", page_icon="🏗
 # ESTADO DA APLICAÇÃO (CARRINHO DE FUROS)
 # -----------------------------------------------------------------------------
 if 'projeto_furos' not in st.session_state:
-    st.session_state.projeto_furos = {} # { 'SP-01': {'df': dataframe, 'imagem': bytes} }
+    st.session_state.projeto_furos = {} 
 
 if 'furo_atual_df' not in st.session_state:
     st.session_state.furo_atual_df = pd.DataFrame({
@@ -130,7 +130,7 @@ else:
 
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO NÚCLEO DE CÁLCULO (ENCAPSULADA PARA PROCESSAR MÚLTIPLOS FUROS)
+# FUNÇÃO NÚCLEO DE CÁLCULO (AOKI-VELLOSO, DÉCOURT-QUARESMA E TEIXEIRA)
 # -----------------------------------------------------------------------------
 def processar_calculos_estaca(df_original, l_arm_manual=None):
     df_spt = df_original.copy()
@@ -138,15 +138,36 @@ def processar_calculos_estaca(df_original, l_arm_manual=None):
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
-    df_spt["N_Aoki"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
-
+    
     Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
     Inercia_c = (np.pi * B**4) / 64 if secao == "Circular" else (B**4) / 12
     Perimetro = np.pi * B if secao == "Circular" else 4 * B
     E_c = 5600 * np.sqrt(fck) * 1000 
+    
+    # Parâmetros Aoki-Velloso
     f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
 
-    def proc_solo(row):
+    # Parâmetros Décourt-Quaresma e Teixeira
+    def get_dq_c(s):
+        s = str(s).lower()
+        if "areia" in s: return 400
+        if "silte" in s: return 200
+        return 120
+        
+    def get_teix_alpha(s):
+        s = str(s).lower()
+        if "areia" in s: return 250
+        if "silte" in s: return 200
+        return 150
+        
+    if "Escavada" in metodo_construtivo:
+        alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
+    elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo:
+        alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
+    else:
+        alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
+
+    def proc_solo_aoki(row):
         solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
         n, prof = row["N_corr"], row["Profundidade (m)"]
         fator_agua = 0.5 if (prof >= nivel_agua and solo["comportamento"] == "granular") else 1.0
@@ -155,34 +176,53 @@ def processar_calculos_estaca(df_original, l_arm_manual=None):
         kv = k1 * (0.3 / B) if solo["comportamento"] == "coesivo" else k1 * ((B + 0.3) / (2 * B)) ** 2
         kh = kv * nu
         rl = (solo["aoki_alpha"] * solo["aoki_K"] * n) / f2
-        rp = (solo["aoki_K"] * row["N_Aoki"]) / f1 * Area_c
+        rp = (solo["aoki_K"] * n) / f1 * Area_c
         delta_rl = rl * Perimetro * 1.0 
         return pd.Series([es, kv, kh, rl, rp, delta_rl])
 
-    df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)"]] = df_spt.apply(proc_solo, axis=1)
+    df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)"]] = df_spt.apply(proc_solo_aoki, axis=1)
 
     cota_fim = cota_assentamento + (comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1.5 * B)
     df_inf = df_spt[(df_spt["Profundidade (m)"] > cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)].copy()
 
     if not df_inf.empty:
-        df_inf["Rl Acum. (kN)"] = df_inf["delta_Rl (kN)"].cumsum()
-        df_inf["Rc Adm (kN)"] = (df_inf["Rp (kN)"] + df_inf["Rl Acum. (kN)"]) / 2.0
+        # Cálculo Aoki-Velloso
+        df_inf["Rl_Aoki_Acum"] = df_inf["delta_Rl (kN)"].cumsum()
+        df_inf["Rc Adm Aoki (kN)"] = (df_inf["Rp (kN)"] + df_inf["Rl_Aoki_Acum"]) / 2.0
+        
+        # Cálculo Décourt-Quaresma
+        df_inf["N_dq"] = df_inf["N_corr"].apply(lambda x: max(3, min(x, 50)))
+        df_inf["delta_Rl_dq"] = beta_dq * 10 * ((df_inf["N_dq"] / 3) + 1) * Perimetro * 1.0
+        df_inf["Rl_DQ_Acum"] = df_inf["delta_Rl_dq"].cumsum()
+        df_inf["Rp_dq"] = alfa_dq * df_inf["Tipo de Solo"].apply(get_dq_c) * df_inf["N_corr"] * Area_c
+        df_inf["Rc Adm DQ (kN)"] = (df_inf["Rp_dq"] + df_inf["Rl_DQ_Acum"]) / 2.0
+        
+        # Cálculo Teixeira
+        df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
+        df_inf["Rl_T_Acum"] = df_inf["delta_Rl_t"].cumsum()
+        df_inf["Rp_t"] = df_inf["Tipo de Solo"].apply(get_teix_alpha) * df_inf["N_corr"] * Area_c
+        df_inf["Rc Adm Teix (kN)"] = (df_inf["Rp_t"] + df_inf["Rl_T_Acum"]) / 2.0
+
+        # Média dos 3 Métodos
+        df_inf["Rc Adm Média (kN)"] = (df_inf["Rc Adm Aoki (kN)"] + df_inf["Rc Adm DQ (kN)"] + df_inf["Rc Adm Teix (kN)"]) / 3.0
+        
+        Q_adm_aoki = df_inf.iloc[-1]["Rc Adm Aoki (kN)"]
+        Q_adm_dq = df_inf.iloc[-1]["Rc Adm DQ (kN)"]
+        Q_adm_t = df_inf.iloc[-1]["Rc Adm Teix (kN)"]
+        Q_adm_media = df_inf.iloc[-1]["Rc Adm Média (kN)"]
     else:
         df_inf = df_spt.head(1).copy()
-        df_inf["Rl Acum. (kN)"] = 0; df_inf["Rc Adm (kN)"] = 0
+        df_inf["Rc Adm Aoki (kN)"] = 0
+        df_inf["Rc Adm DQ (kN)"] = 0
+        df_inf["Rc Adm Teix (kN)"] = 0
+        df_inf["Rc Adm Média (kN)"] = 0
+        Q_adm_aoki = Q_adm_dq = Q_adm_t = Q_adm_media = 0
 
-    kh_global = df_inf["kh (kN/m³)"].mean()
-    if tipo_fundacao == "Rasa (Sapata/Radier)":
-        kv_global = df_inf["kv (kN/m³)"].mean()
-    else:
-        n_ponta = df_inf.iloc[-1]["N_corr"]
-        es_ponta = 1000 * n_ponta if "Escavada" in metodo_construtivo else 3000 * n_ponta
-        kv_global = es_ponta / (B * (1 - nu**2) * 0.85)
-
-    Q_adm = df_inf.iloc[-1]["Rc Adm (kN)"] if not df_inf.empty else 0
+    kh_global = df_inf["kh (kN/m³)"].mean() if not df_inf.empty else 0
+    kv_global = df_inf["kv (kN/m³)"].mean() if not df_inf.empty else 0
 
     K_linha = kh_global * B
-    lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25
+    lamb = (K_linha / (4 * E_c * Inercia_c)) ** 0.25 if kh_global > 0 else 1.0
     z_vals = np.linspace(0, comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1, 200)
 
     y_disp = (np.exp(-lamb * z_vals) / (2 * E_c * Inercia_c * lamb**3)) * (carga_H * np.cos(lamb * z_vals) + lamb * carga_M * (np.cos(lamb * z_vals) + np.sin(lamb * z_vals)))
@@ -203,7 +243,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None):
     idx_nulo = np.where(m_apos_max <= M_cr)[0]
     z_momento_nulo = z_apos_max[idx_nulo[0]] if len(idx_nulo) > 0 else comprimento_estaca
 
-    # Define o comprimento da armadura (automático ou manual)
     L_armadura_calc = min(comprimento_estaca, max(max(3.0, 5 * B), z_momento_nulo + 0.40)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
     if l_arm_manual is not None:
         L_armadura_calc = float(l_arm_manual)
@@ -213,23 +252,24 @@ def processar_calculos_estaca(df_original, l_arm_manual=None):
     if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
 
     M_rd = n_barras * area_barra * ((fyk / 1.15) * 1000) * (0.75 * B if secao == "Circular" else 0.80 * B)
-    H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
     V_concreto = Area_c * comprimento_estaca
     peso_long = n_barras * area_barra * L_armadura_calc * 7850
     peso_estribo = int(L_armadura_calc / 0.15) * (np.pi * (B - 0.08) if secao == "Circular" else 4 * (B - 0.08)) * ((np.pi * (6.3 / 1000)**2) / 4) * 7850
     peso_aco_total = peso_long + peso_estribo
 
     return {
-        "df_spt": df_spt, "df_inf": df_inf, "Q_adm": Q_adm, "kv_global": kv_global, "kh_global": kh_global,
-        "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
+        "df_spt": df_spt, "df_inf": df_inf, 
+        "Q_adm_aoki": Q_adm_aoki, "Q_adm_dq": Q_adm_dq, "Q_adm_t": Q_adm_t, "Q_adm_media": Q_adm_media,
+        "kv_global": kv_global, "kh_global": kh_global,
+        "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "deslocamento_max_mm": deslocamento_max_mm,
         "L_armadura": L_armadura_calc, "n_barras": n_barras, "V_concreto": V_concreto, "peso_aco_total": peso_aco_total,
-        "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr, "peso_long": peso_long, "peso_estribo": peso_estribo
+        "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr
     }
 
 
 # TÍTULO PRINCIPAL
 st.title("🏗️ Projeto Integrado de Fundações")
-st.caption("Múltiplos Furos, Verificação Geotécnica, Esforços e Memorial Completo")
+st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Esforços e Memorial Completo")
 
 # -----------------------------------------------------------------------------
 # COLUNA ESQUERDA: IMPORTAÇÃO E IA (O "CARRINHO DE COMPRAS")
@@ -277,12 +317,7 @@ with col_esq:
                             REGRAS: 1. Profundidade: apenas número. 2. N_SPT: golpes finais (se fração, só o numerador). 3. Tipo: {", ".join(OPCOES_SOLO)}"""
                             
                             resposta = modelo.generate_content([prompt, img])
-                            
-                            # Quebrado em várias linhas para evitar corte ao colar
-                            texto_limpo = resposta.text
-                            texto_limpo = texto_limpo.replace("```csv", "")
-                            texto_limpo = texto_limpo.replace("```", "")
-                            texto_limpo = texto_limpo.strip()
+                            texto_limpo = resposta.text.replace("```csv", "").replace("```", "").strip()
                             
                             df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
                             df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
@@ -324,12 +359,12 @@ with col_esq:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# COLUNA DIREITA: ABAS DE RESULTADOS
+# COLUNA DIREITA: ABAS DE RESULTADOS (RESUMO GERAL + ANÁLISE DETALHADA)
 # -----------------------------------------------------------------------------
 with col_dir:
     tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", "🔍 Análise Detalhada dos Furos"])
 
-    # ABA 1: RESUMO DO PROJETO E RECOMENDAÇÃO AUTOMÁTICA
+    # ABA 1: RESUMO DO PROJETO
     with tab_resumo:
         st.subheader("Resumo dos Furos Salvos no Projeto")
         if len(st.session_state.projeto_furos) == 0:
@@ -344,25 +379,24 @@ with col_dir:
                 calc = processar_calculos_estaca(dados["df"], L_armadura_manual)
                 df_furo = calc["df_spt"]
                 prof_max = df_furo["Profundidade (m)"].max()
-                spt_max = df_furo["N_SPT"].max()
                 
-                # Pega N_SPT dos primeiros 3 metros para avaliar fundação rasa
                 spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
                 if not pd.isna(spt_rasos): todos_spt_rasos.append(spt_rasos)
                 
-                status_geo = "✅ OK" if carga_V <= calc["Q_adm"] else "❌ FALHA"
+                status_geo = "✅ OK" if carga_V <= calc["Q_adm_media"] else "❌ FALHA"
                 
                 dados_resumo.append({
                     "Furo": nome_furo,
-                    "Prof. Total (m)": prof_max,
-                    "Maior N_SPT": spt_max,
-                    "Carga Adm (kN)": f"{calc['Q_adm']:.1f}",
-                    "Status Atual": status_geo
+                    "Prof. (m)": prof_max,
+                    "Aoki (kN)": f"{calc['Q_adm_aoki']:.0f}",
+                    "Décourt-Q. (kN)": f"{calc['Q_adm_dq']:.0f}",
+                    "Teixeira (kN)": f"{calc['Q_adm_t']:.0f}",
+                    "Média (kN)": f"{calc['Q_adm_media']:.0f}",
+                    "Status": status_geo
                 })
             
             st.table(pd.DataFrame(dados_resumo))
             
-            # MOTOR DE RECOMENDAÇÃO BASEADO EM REGRAS
             st.markdown("### 🤖 Diagnóstico e Recomendação de Fundação")
             recomendacao = ""
             media_spt_raso = np.mean(todos_spt_rasos) if todos_spt_rasos else 0
@@ -375,71 +409,77 @@ with col_dir:
                 recomendacao += "**Terreno superficial intermediário:** Fazer verificação de viabilidade econômica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
                 
             if tem_na and nivel_agua < 5.0:
-                recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detectado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evitar estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz para evitar desmoronamento do fuste."
+                recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detectado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evitar estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz."
             
             st.info(recomendacao)
             
-    # ABA 2: ANÁLISE INDIVIDUAL DOS FUROS
+    # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS
     with tab_atual:
-        # Monta um dicionário com todos os furos disponíveis para o Seletor
-        furos_disponiveis = {}
-        furos_disponiveis[f"{st.session_state.furo_atual_nome} (Em Edição na Tabela)"] = df_editado
-        
+        furos_disponiveis = {f"{st.session_state.furo_atual_nome} (Em Edição na Tabela)": df_editado}
         for k, v in st.session_state.projeto_furos.items():
             furos_disponiveis[f"{k} (Salvo no Projeto)"] = v["df"]
             
-        furo_selecionado_visualizacao = st.selectbox(
-            "Selecione o furo que deseja analisar graficamente:", 
-            list(furos_disponiveis.keys())
-        )
+        furo_selecionado_visualizacao = st.selectbox("🔍 Escolha qual furo visualizar nos gráficos:", list(furos_disponiveis.keys()))
+        res_atual = processar_calculos_estaca(furos_disponiveis[furo_selecionado_visualizacao], L_armadura_manual)
         
-        df_para_analise = furos_disponiveis[furo_selecionado_visualizacao]
-        res_atual = processar_calculos_estaca(df_para_analise, L_armadura_manual)
+        st.markdown("### 📊 Capacidade de Carga Geotécnica")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("⚖️ MÉDIA (Adotada)", f"{res_atual['Q_adm_media']:,.1f} kN")
+        c2.metric("Aoki-Velloso", f"{res_atual['Q_adm_aoki']:,.1f} kN")
+        c3.metric("Décourt-Quaresma", f"{res_atual['Q_adm_dq']:,.1f} kN")
+        c4.metric("Teixeira", f"{res_atual['Q_adm_t']:,.1f} kN")
         
+        st.markdown("### 🏗️ Estrutural e Quantitativos")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Carga Adm (Geotécnica)", f"{res_atual['Q_adm']:,.1f} kN")
-        c2.metric("Momento Resistente (M_Rd)", f"{res_atual['M_rd']:.1f} kN.m")
+        c1.metric("Momento Resistente", f"{res_atual['M_rd']:.1f} kN.m")
+        c2.metric("Comprimento Gaiola", f"{res_atual['L_armadura']:.2f} m")
         c3.metric("Aço Total (Estaca)", f"{res_atual['peso_aco_total']:.1f} kg")
         
-        st.markdown(f"**Gaiola:** {res_atual['L_armadura']:.2f} m | **Arm. Long.:** {res_atual['n_barras']} Φ {bitola:.1f} mm | **Estribos:** Φ 6.3 c/ 15cm")
+        # Gráficos Dinâmicos
+        fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
         
-        # Gráficos Resumidos
-        fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(10, 4))
-        
-        ax1.plot(res_atual["df_inf"]["Rc Adm (kN)"], res_atual["df_inf"]["Profundidade (m)"], color="green", marker="D")
-        ax1.axvline(x=carga_V, color="red", linestyle="--")
-        ax1.set_title("Resistência Aoki (kN)")
+        # Gráfico 1: As 4 curvas de resistência
+        ax1.plot(res_atual["df_inf"]["Rc Adm Aoki (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Aoki", color="green")
+        ax1.plot(res_atual["df_inf"]["Rc Adm DQ (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Décourt", color="blue")
+        ax1.plot(res_atual["df_inf"]["Rc Adm Teix (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange")
+        ax1.plot(res_atual["df_inf"]["Rc Adm Média (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Média", color="black", linewidth=2, linestyle=':')
+        ax1.axvline(x=carga_V, color='red', linestyle='--')
+        ax1.set_title("Resistência (kN)")
         ax1.invert_yaxis()
+        ax1.grid(True, ls="--", alpha=0.5)
+        ax1.legend(fontsize=8)
         
+        # Gráfico 2: Fletor
         ax2.plot(res_atual["m_flet"], res_atual["z_vals"], color="red")
         ax2.axvline(x=res_atual["M_rd"], color='darkred', linestyle='--')
         ax2.set_title("Momento Fletor")
         ax2.invert_yaxis()
+        ax2.grid(True, ls="--", alpha=0.5)
         
+        # Gráfico 3: Elástica
         ax3.plot(res_atual["y_disp"]*1000, res_atual["z_vals"], color="blue")
         ax3.set_title("Elástica (mm)")
         ax3.invert_yaxis()
+        ax3.grid(True, ls="--", alpha=0.5)
         
         st.pyplot(fig_g)
-        plt.close(fig_g) # Limpa a memória do gráfico
+        plt.close(fig_g)
 
 # -----------------------------------------------------------------------------
-# GERAÇÃO DO MEGA RELATÓRIO PDF
+# GERAÇÃO DO MEGA RELATÓRIO PDF COM OS 3 MÉTODOS
 # -----------------------------------------------------------------------------
 def gerar_pdf_multiprojeto():
-    if len(st.session_state.projeto_furos) == 0:
-        return None
+    if len(st.session_state.projeto_furos) == 0: return None
         
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    story = []
-    styles = getSampleStyleSheet()
+    story, styles = [], getSampleStyleSheet()
 
     title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
     h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
     body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
 
-    # 1. CABEÇALHO E CAPA GERAL
+    # 1. CABEÇALHO
     if os.path.exists(logo_path):
         im = ReportLabImage(logo_path, width=150, height=60)
         im.hAlign = 'LEFT'
@@ -452,39 +492,48 @@ def gerar_pdf_multiprojeto():
     story.append(Paragraph("<b>Projeto Geotécnico Consolidado - Múltiplos Furos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
     story.append(Spacer(1, 15))
 
-    # 2. RESUMO DO PROJETO E RECOMENDAÇÃO
+    # 2. RESUMO E TABELA COMPARATIVA GERAL
     story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
     story.append(Paragraph(recomendacao.replace('\n', '<br/>'), body_style))
     story.append(Spacer(1, 10))
     
-    dados_tab_resumo = [["Furo", "Prof. Final", "Maior SPT", "Rc Adm", "Status"]]
+    dados_tab_resumo = [["Furo", "Prof.", "Aoki-Velloso", "Décourt-Q.", "Teixeira", "Média Adotada"]]
     for f in dados_resumo:
-        dados_tab_resumo.append([f["Furo"], f"{f['Prof. Total (m)']}m", f['Maior N_SPT'], f"{f['Carga Adm (kN)']} kN", f['Status Atual']])
+        dados_tab_resumo.append([f["Furo"], f"{f['Prof. (m)']}m", f"{f['Aoki (kN)']} kN", f"{f['Décourt-Q. (kN)']} kN", f"{f['Teixeira (kN)']} kN", f"{f['Média (kN)']} kN"])
         
-    t_res_geral = Table(dados_tab_resumo, colWidths=[100, 100, 100, 100, 100])
+    t_res_geral = Table(dados_tab_resumo, colWidths=[80, 50, 85, 85, 85, 95])
     t_res_geral.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
     story.append(t_res_geral)
     story.append(PageBreak())
 
-    # 3. LOOP PARA CADA FURO SALVO
+    # 3. LOOP DOS FUROS NO PDF
     for nome_furo, dados in st.session_state.projeto_furos.items():
         res = processar_calculos_estaca(dados["df"], L_armadura_manual)
         
         story.append(Paragraph(f"<b>ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
         story.append(Spacer(1, 10))
         
+        story.append(Paragraph("<b>Resumo da Capacidade de Carga (Três Métodos)</b>", h2_style))
+        txt_cap = f"<b>Aoki-Velloso:</b> {res['Q_adm_aoki']:.1f} kN | <b>Décourt-Quaresma:</b> {res['Q_adm_dq']:.1f} kN | <b>Teixeira:</b> {res['Q_adm_t']:.1f} kN<br/>"
+        txt_cap += f"<b>Carga Admissível Média Adotada:</b> <font color='green'><b>{res['Q_adm_media']:.1f} kN</b></font>"
+        story.append(Paragraph(txt_cap, body_style))
+        story.append(Spacer(1, 5))
+        
         story.append(Paragraph("<b>Geometria e Quantitativos (Por Estaca)</b>", h2_style))
-        txt_res = f"<b>Q_adm:</b> {res['Q_adm']:.1f} kN | <b>M_Rd:</b> {res['M_rd']:.1f} kN.m | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
+        txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
         txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
         txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg"
         story.append(Paragraph(txt_res, body_style))
         story.append(Spacer(1, 15))
         
-        # GERAR GRÁFICOS DO FURO ESPECÍFICO
+        # GERAR GRÁFICOS DO FURO ESPECÍFICO (AGORA COM AS 4 LINHAS DE RESISTÊNCIA)
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
-        ax1.plot(res["df_inf"]["Rc Adm (kN)"], res["df_inf"]["Profundidade (m)"], label="Carga Adm", color="green")
+        ax1.plot(res["df_inf"]["Rc Adm Aoki (kN)"], res["df_inf"]["Profundidade (m)"], label="Aoki", color="green")
+        ax1.plot(res["df_inf"]["Rc Adm DQ (kN)"], res["df_inf"]["Profundidade (m)"], label="Décourt", color="blue")
+        ax1.plot(res["df_inf"]["Rc Adm Teix (kN)"], res["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange")
+        ax1.plot(res["df_inf"]["Rc Adm Média (kN)"], res["df_inf"]["Profundidade (m)"], label="Média", color="black", linewidth=2, linestyle=':')
         ax1.axvline(x=carga_V, color='red', linestyle='--')
-        ax1.invert_yaxis(); ax1.set_title("Resistência Aoki"); ax1.grid(True, ls="--", alpha=0.5)
+        ax1.invert_yaxis(); ax1.set_title("Resistência (kN)"); ax1.grid(True, ls="--", alpha=0.5); ax1.legend(fontsize=7)
         
         ax2.plot(res["m_flet"], res["z_vals"], color="red")
         ax2.axvline(x=res["M_rd"], color='darkred', linestyle='--')
@@ -496,17 +545,17 @@ def gerar_pdf_multiprojeto():
         buf_graf = io.BytesIO()
         fig.savefig(buf_graf, format='png', dpi=150, bbox_inches='tight')
         buf_graf.seek(0)
-        plt.close(fig) # Importante para não explodir a memória RAM
+        plt.close(fig) 
         
         story.append(ReportLabImage(buf_graf, width=500, height=130))
         story.append(Spacer(1, 15))
         
-        # TABELA DISCRETIZADA
-        story.append(Paragraph("<b>Tabela Metro a Metro</b>", h2_style))
-        data_tab = [["Prof(m)", "Solo", "N_SPT", "k_v", "k_h", "Rc Adm (kN)"]]
-        for idx, r in res["df_inf"].head(10).iterrows(): # Mostra os primeiros 10m no PDF para caber
-            data_tab.append([f"{r['Profundidade (m)']:.0f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['kv (kN/m³)']:,.0f}", f"{r['kh (kN/m³)']:,.0f}", f"{r['Rc Adm (kN)']:.1f}"])
-        t_m = Table(data_tab, colWidths=[50, 90, 50, 60, 60, 90])
+        # TABELA DISCRETIZADA NO PDF MOSTRANDO A MÉDIA
+        story.append(Paragraph("<b>Tabela Metro a Metro (Amostra dos 10 primeiros metros)</b>", h2_style))
+        data_tab = [["Prof(m)", "Solo", "N_SPT", "Q Aoki (kN)", "Q Décourt (kN)", "Q Média (kN)"]]
+        for idx, r in res["df_inf"].head(10).iterrows(): 
+            data_tab.append([f"{r['Profundidade (m)']:.0f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['Rc Adm Aoki (kN)']:.0f}", f"{r['Rc Adm DQ (kN)']:.0f}", f"{r['Rc Adm Média (kN)']:.0f}"])
+        t_m = Table(data_tab, colWidths=[50, 90, 50, 80, 80, 80])
         t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
         story.append(t_m)
         
