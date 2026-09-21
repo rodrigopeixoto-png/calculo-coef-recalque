@@ -312,10 +312,12 @@ with col_esq:
     api_key = st.text_input("🔑 API Key do Gemini (Obrigatório):", type="password")
     arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
     
+    doc = None
     if arquivo_pdf is not None:
         try:
             arquivo_pdf.seek(0)
-            doc = fitz.open(stream=arquivo_pdf.read(), filetype="pdf")
+            bytes_pdf = arquivo_pdf.read()
+            doc = fitz.open(stream=bytes_pdf, filetype="pdf")
             total_paginas = len(doc)
             
             st.markdown("---")
@@ -367,25 +369,31 @@ with col_esq:
                                 st.error("Tabela não reconhecida na imagem.")
                         except Exception as e:
                             st.error(f"Erro IA: {e}")
-            
-            st.write(f"**Revisão: {st.session_state.furo_atual_nome}**")
-            df_editado = st.data_editor(
-                st.session_state.furo_atual_df,
-                column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
-                num_rows="dynamic", width="stretch"
-            )
-            
-            if st.button(f"💾 Salvar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
-                st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
-                    "df": df_editado.copy(),
-                    "img": st.session_state.furo_atual_img
-                }
-                st.success(f"Furo {st.session_state.furo_atual_nome} adicionado ao projeto!")
-            
+                            
+        except Exception as e: 
+            st.error(f"Erro PDF: {e}")
+            doc = None
+
+    # Tabela fica sempre disponível, com ou sem PDF
+    st.markdown("---")
+    st.write(f"**Revisão: {st.session_state.furo_atual_nome}**")
+    df_editado = st.data_editor(
+        st.session_state.furo_atual_df,
+        column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
+        num_rows="dynamic", width="stretch"
+    )
+    
+    if st.button(f"💾 Salvar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
+        st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
+            "df": df_editado.copy(),
+            "img": st.session_state.furo_atual_img
+        }
+        st.success(f"Furo {st.session_state.furo_atual_nome} adicionado ao projeto!")
+    
+    # Sessão de Croqui apenas se houver PDF
+    if arquivo_pdf is not None and doc is not None:
+        try:
             st.markdown("---")
-            # -------------------------------------------------------------
-            # ADIÇÃO DO CROQUI
-            # -------------------------------------------------------------
             st.subheader("🗺️ 2. Adicionar Croqui de Locação")
             st.info("Selecione a página do PDF que contém o mapa/croqui dos furos e guarde no projeto.")
             
@@ -401,8 +409,8 @@ with col_esq:
                 pix_high = doc.load_page(pag_croqui - 1).get_pixmap(dpi=300)
                 st.session_state.croqui_img = pix_high.tobytes("png")
                 st.success("Croqui guardado com sucesso!")
-                
-        except Exception as e: st.error(f"Erro PDF: {e}")
+        except Exception as e:
+            st.error(f"Erro ao processar croqui: {e}")
 
     st.markdown("---")
     if len(st.session_state.projeto_furos) > 0:
