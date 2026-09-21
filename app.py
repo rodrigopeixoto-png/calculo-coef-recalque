@@ -393,21 +393,22 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
-    # Tabela fica sempre disponível para edição manual
+    # Tabela fica sempre disponível para edição manual, AGORA ATRELADA AO NOME EM TEMPO REAL
     st.markdown("---")
-    st.write(f"**Tabela de Preenchimento: {st.session_state.furo_atual_nome}**")
+    st.write(f"**Tabela de Preenchimento: {nome_furo_input}**")
     df_editado = st.data_editor(
         st.session_state.furo_atual_df,
         column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
         num_rows="dynamic", width="stretch"
     )
     
-    if st.button(f"💾 Guardar {st.session_state.furo_atual_nome} no Projeto", type="primary", width="stretch"):
-        st.session_state.projeto_furos[st.session_state.furo_atual_nome] = {
+    if st.button(f"💾 Guardar {nome_furo_input} no Projeto", type="primary", width="stretch"):
+        st.session_state.projeto_furos[nome_furo_input] = {
             "df": df_editado.copy(),
             "img": st.session_state.furo_atual_img
         }
-        st.success(f"Furo {st.session_state.furo_atual_nome} guardado e adicionado ao projeto!")
+        st.session_state.furo_atual_nome = nome_furo_input
+        st.success(f"Furo {nome_furo_input} guardado e adicionado ao projeto!")
     
     st.markdown("---")
     st.subheader("🗺️ 2. Adicionar Croqui de Locação")
@@ -511,9 +512,9 @@ with col_dir:
                     st.session_state.croqui_img = None
                     st.rerun()
             
-    # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS
+    # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS (AGORA ATUALIZA COM NOME_FURO_INPUT EM TEMPO REAL)
     with tab_atual:
-        furos_disponiveis = {f"{st.session_state.furo_atual_nome} (Em Edição na Tabela)": df_editado}
+        furos_disponiveis = {f"{nome_furo_input} (Em Edição na Tabela)": df_editado}
         for k, v in st.session_state.projeto_furos.items():
             furos_disponiveis[f"{k} (Salvo no Projeto)"] = v["df"]
             
