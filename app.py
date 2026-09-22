@@ -91,7 +91,7 @@ if tipo_fundacao == "Profunda (Estaca)":
 else:
     metodo_construtivo = "Raiz/Hélice"
 
-secao = st.sidebar.selectbox("Geometria da Seção", ["Circular", "Quadrada"])
+secao = st.sidebar.selectbox("Geometria da Secção", ["Circular", "Quadrada"])
 B = st.sidebar.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.30, step=0.05)
 cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value=0.0, value=0.0, step=0.5)
 comprimento_estaca = st.sidebar.number_input("Comprimento da Estaca (m)", min_value=1.0, value=15.0, step=0.5) if tipo_fundacao == "Profunda (Estaca)" else 0.0
@@ -117,7 +117,7 @@ nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, 
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
-fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
+fck = st.sidebar.number_input("Resistência do Betão (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
 fyk = st.sidebar.number_input("Resistência do Aço (fyk) em MPa", min_value=250.0, value=500.0, step=50.0)
 
@@ -130,6 +130,8 @@ carga_M = st.sidebar.number_input("Momento Fletor (kN.m)", min_value=0.0, value=
 st.sidebar.markdown("---")
 st.sidebar.header("🔧 Detalhamento da Armadura")
 bitola = st.sidebar.selectbox("Bitola Longitudinal (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
+bitola_estribo = st.sidebar.selectbox("Bitola do Estribo (mm)", [5.0, 6.3, 8.0, 10.0], index=1)
+espacamento_estribo = st.sidebar.number_input("Espaçamento dos Estribos (cm)", min_value=5.0, max_value=30.0, value=15.0, step=2.5)
 
 override_l = st.sidebar.checkbox("Ajustar Comprimento Manualmente?", value=False)
 L_armadura_manual = None
@@ -142,12 +144,111 @@ if override_l:
         value=limite_maximo, 
         step=0.5
     )
-else:
-    st.sidebar.info("O comprimento da armadura será calculado automaticamente para cada furo conforme a norma.")
 
+st.sidebar.markdown("---")
+st.sidebar.header("📄 Relatório PDF")
+incluir_pm = st.sidebar.checkbox("Incluir Diagrama de Interação P-M?", value=True)
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO NÚCLEO DE CÁLCULO (AOKI-VELLOSO, DÉCOURT-QUARESMA E TEIXEIRA)
+# FUNÇÕES DE DESENHO (SECÇÃO E DIAGRAMA P-M)
+# -----------------------------------------------------------------------------
+def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
+    fig, ax = plt.subplots(figsize=(4, 4))
+    cob = 0.05  # Recobrimento fixo de 5cm
+    
+    if secao_tipo == "Circular":
+        # Betão
+        circle_ext = plt.Circle((0, 0), B_m/2, color='#E0E0E0', ec='black', lw=1.5, zorder=1)
+        # Estribo (Espiral ou Circular)
+        raio_estribo = B_m/2 - cob
+        circle_int = plt.Circle((0, 0), raio_estribo, color='none', ec='red', lw=1.5, zorder=2)
+        ax.add_patch(circle_ext)
+        ax.add_patch(circle_int)
+        
+        # Barras longitudinais
+        angles = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
+        r_barras = raio_estribo - (bitola_estribo_mm/2000) - (bitola_long_mm/2000)
+        for angle in angles:
+            x = r_barras * np.cos(angle)
+            y = r_barras * np.sin(angle)
+            rebar = plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3)
+            ax.add_patch(rebar)
+            
+    else: # Quadrada
+        # Betão
+        rect_ext = plt.Rectangle((-B_m/2, -B_m/2), B_m, B_m, color='#E0E0E0', ec='black', lw=1.5, zorder=1)
+        # Estribo
+        L_estribo = B_m - 2*cob
+        rect_int = plt.Rectangle((-L_estribo/2, -L_estribo/2), L_estribo, L_estribo, color='none', ec='red', lw=1.5, zorder=2)
+        ax.add_patch(rect_ext)
+        ax.add_patch(rect_int)
+        
+        # Barras longitudinais distribuídas no perímetro do estribo
+        L_barras = L_estribo - (bitola_estribo_mm/1000) - (bitola_long_mm/1000)
+        perimetro = 4 * L_barras
+        for i in range(n_barras):
+            s = (i / n_barras) * perimetro
+            if s <= L_barras: 
+                x, y = -L_barras/2 + s, L_barras/2
+            elif s <= 2*L_barras: 
+                x, y = L_barras/2, L_barras/2 - (s - L_barras)
+            elif s <= 3*L_barras: 
+                x, y = L_barras/2 - (s - 2*L_barras), -L_barras/2
+            else: 
+                x, y = -L_barras/2, -L_barras/2 + (s - 3*L_barras)
+            rebar = plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3)
+            ax.add_patch(rebar)
+
+    ax.set_xlim(-B_m/2 - 0.05, B_m/2 + 0.05)
+    ax.set_ylim(-B_m/2 - 0.05, B_m/2 + 0.05)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_title(f"Armadura: {n_barras} Φ {bitola_long_mm:.1f} mm\nEstribo: Φ {bitola_estribo_mm:.1f} c/ {espacamento_estribo:.0f}cm", fontsize=10)
+    return fig
+
+def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
+    # Cálculo aproximado da Envoltória de Interação (Método Simplificado de Bresler/Parabólico)
+    fcd = (fck / 1.4) * 1000  # kPa
+    fyd = (fyk / 1.15) * 1000 # kPa
+    
+    N_max_comp = 0.85 * fcd * Area_c + fyd * As
+    N_max_trac = -fyd * As
+    N_bal = 0.35 * N_max_comp # Ponto balanceado aproximado
+    M_bal = 1.35 * M_rd       # Momento máximo ocorre com alguma compressão
+    
+    # Gerar a curva
+    N_vals = np.linspace(N_max_trac, N_max_comp, 100)
+    M_vals = []
+    
+    for n in N_vals:
+        if n < 0:
+            m = M_rd * (1 - (n/N_max_trac)**2)
+        elif n < N_bal:
+            # Ramo inferior de compressão (ganho de momento)
+            m = M_rd + (M_bal - M_rd) * ((n/N_bal)**0.65)
+        else:
+            # Ramo superior de compressão (perda de momento)
+            m = M_bal * (1 - ((n - N_bal)/(N_max_comp - N_bal))**1.8)
+        M_vals.append(max(0, m))
+        
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.plot(M_vals, N_vals, color='#1E3A8A', lw=2, label='Envoltória Resistente')
+    ax.fill_betweenx(N_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
+    
+    # Ponto de atuação
+    ax.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante ($S_d$)')
+    
+    ax.axhline(0, color='black', linewidth=1)
+    ax.axvline(0, color='black', linewidth=1)
+    ax.set_xlabel('Momento Fletor (kN.m)')
+    ax.set_ylabel('Carga Axial (kN)')
+    ax.set_title('Diagrama de Interação (P-M)')
+    ax.legend(fontsize=8)
+    ax.grid(True, ls='--', alpha=0.5)
+    return fig
+
+# -----------------------------------------------------------------------------
+# FUNÇÃO NÚCLEO DE CÁLCULO
 # -----------------------------------------------------------------------------
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
@@ -161,10 +262,8 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     Perimetro = np.pi * B if secao == "Circular" else 4 * B
     E_c = 5600 * np.sqrt(fck) * 1000 
     
-    # Parâmetros Aoki-Velloso
     f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
 
-    # Parâmetros Décourt-Quaresma e Teixeira
     def get_dq_c(s):
         s = str(s).lower()
         if "areia" in s: return 400
@@ -203,11 +302,9 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_inf = df_spt[(df_spt["Profundidade (m)"] > cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)].copy()
 
     if not df_inf.empty:
-        # Cálculo Aoki-Velloso
         df_inf["Rl_Aoki_Acum"] = df_inf["delta_Rl (kN)"].cumsum()
         df_inf["Rc Adm Aoki (kN)"] = (df_inf["Rp (kN)"] + df_inf["Rl_Aoki_Acum"]) / 2.0
         
-        # Cálculo Décourt-Quaresma
         df_inf["N_dq"] = df_inf["N_corr"].apply(lambda x: max(3, min(x, 50)))
         df_inf["C_dq"] = df_inf["Tipo de Solo"].apply(get_dq_c)
         df_inf["delta_Rl_dq"] = beta_dq * 10 * ((df_inf["N_dq"] / 3) + 1) * Perimetro * 1.0
@@ -215,14 +312,12 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         df_inf["Rp_dq"] = alfa_dq * df_inf["C_dq"] * df_inf["N_corr"] * Area_c
         df_inf["Rc Adm DQ (kN)"] = (df_inf["Rp_dq"] + df_inf["Rl_DQ_Acum"]) / 2.0
         
-        # Cálculo Teixeira
         df_inf["alpha_teix"] = df_inf["Tipo de Solo"].apply(get_teix_alpha)
         df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
         df_inf["Rl_T_Acum"] = df_inf["delta_Rl_t"].cumsum()
         df_inf["Rp_t"] = df_inf["alpha_teix"] * df_inf["N_corr"] * Area_c
         df_inf["Rc Adm Teix (kN)"] = (df_inf["Rp_t"] + df_inf["Rl_T_Acum"]) / 2.0
 
-        # Aplicação do Critério Escolhido
         df_inf["Rc Adm Média (kN)"] = (df_inf["Rc Adm Aoki (kN)"] + df_inf["Rc Adm DQ (kN)"] + df_inf["Rc Adm Teix (kN)"]) / 3.0
         df_inf["Rc Adm Menor (kN)"] = df_inf[["Rc Adm Aoki (kN)", "Rc Adm DQ (kN)", "Rc Adm Teix (kN)"]].min(axis=1)
 
@@ -244,11 +339,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         Q_adm_adotada = df_inf.iloc[-1]["Rc Adm Adotada (kN)"]
     else:
         df_inf = df_spt.head(1).copy()
-        df_inf["Rc Adm Aoki (kN)"] = 0
-        df_inf["Rc Adm DQ (kN)"] = 0
-        df_inf["Rc Adm Teix (kN)"] = 0
-        df_inf["Rc Adm Média (kN)"] = 0
-        df_inf["Rc Adm Adotada (kN)"] = 0
+        df_inf["Rc Adm Aoki (kN)"] = df_inf["Rc Adm DQ (kN)"] = df_inf["Rc Adm Teix (kN)"] = df_inf["Rc Adm Média (kN)"] = df_inf["Rc Adm Adotada (kN)"] = 0
         Q_adm_aoki = Q_adm_dq = Q_adm_t = Q_adm_media = Q_adm_adotada = 0
 
     kh_global = df_inf["kh (kN/m³)"].mean() if not df_inf.empty else 0
@@ -287,9 +378,10 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     M_rd = n_barras * area_barra * ((fyk / 1.15) * 1000) * (0.75 * B if secao == "Circular" else 0.80 * B)
     H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
     
+    As_total = n_barras * area_barra
     V_concreto = Area_c * comprimento_estaca
-    peso_long = n_barras * area_barra * L_armadura_calc * 7850
-    peso_estribo = int(L_armadura_calc / 0.15) * (np.pi * (B - 0.08) if secao == "Circular" else 4 * (B - 0.08)) * ((np.pi * (6.3 / 1000)**2) / 4) * 7850
+    peso_long = As_total * L_armadura_calc * 7850
+    peso_estribo = int(L_armadura_calc / (espacamento_estribo/100)) * (np.pi * (B - 0.10) if secao == "Circular" else 4 * (B - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
     peso_aco_total = peso_long + peso_estribo
 
     return {
@@ -301,13 +393,13 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "L_armadura": L_armadura_calc, "n_barras": n_barras, "V_concreto": V_concreto, "peso_aco_total": peso_aco_total,
         "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr,
         "Area_c": Area_c, "Perimetro": Perimetro, "E_c": E_c, "Inercia_c": Inercia_c,
-        "f1": f1, "f2": f2, "alfa_dq": alfa_dq, "beta_dq": beta_dq, "beta_t": beta_t
+        "f1": f1, "f2": f2, "alfa_dq": alfa_dq, "beta_dq": beta_dq, "beta_t": beta_t, "As_total": As_total
     }
 
 
 # TÍTULO PRINCIPAL
 st.title("🏗️ Projeto Integrado de Fundações")
-st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Esforços e Memorial Completo")
+st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Detalhamento de Armaduras e Diagrama P-M")
 
 # -----------------------------------------------------------------------------
 # COLUNA ESQUERDA: IMPORTAÇÃO, IA, OFFLINE E CROQUI
@@ -346,7 +438,6 @@ with col_esq:
                 pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
                 st.image(pix_preview.tobytes("png"), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
             
-            # --- OS 4 BOTÕES DE AÇÃO ---
             c_btn1, c_btn2, c_btn3, c_btn4 = st.columns(4)
             with c_btn1:
                 btn_ia = st.button("🤖 Ler IA (Limitado)", use_container_width=True, help="Usa o Google Gemini (20 leituras/dia)")
@@ -366,7 +457,7 @@ with col_esq:
                 st.rerun()
                 
             if btn_offline:
-                with st.spinner("Analisando o PDF localmente sem internet..."):
+                with st.spinner("A analisar o PDF localmente sem internet..."):
                     try:
                         arquivo_pdf.seek(0)
                         with pdfplumber.open(arquivo_pdf) as pdf:
@@ -413,7 +504,7 @@ with col_esq:
             if btn_ia:
                 if not api_key: st.warning("Insira a chave de API primeiro.")
                 else:
-                    with st.spinner("Lendo tabela na nuvem..."):
+                    with st.spinner("A ler tabela na nuvem..."):
                         try:
                             genai.configure(api_key=api_key)
                             modelo = genai.GenerativeModel('gemini-3.6-flash')
@@ -425,12 +516,7 @@ with col_esq:
                             REGRAS: 1. Profundidade: apenas número. 2. N_SPT: golpes finais (se fração, só o numerador). 3. Tipo: {", ".join(OPCOES_SOLO)}"""
                             
                             resposta = modelo.generate_content([prompt, img])
-                            
-                            # CÓDIGO CORRIGIDO (Protegido contra cortes na hora de copiar)
-                            texto_limpo = resposta.text
-                            texto_limpo = texto_limpo.replace("```csv", "")
-                            texto_limpo = texto_limpo.replace("```", "")
-                            texto_limpo = texto_limpo.strip()
+                            texto_limpo = resposta.text.replace("```csv", "").replace("```", "").strip()
                             
                             df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
                             df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
@@ -463,7 +549,6 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
-    # Tabela de Edição / Copy-Paste do Excel
     st.markdown("---")
     st.write(f"**Tabela de Preenchimento: {nome_furo_input}** (Aceita Colar do Excel)")
     df_editado = st.data_editor(
@@ -524,7 +609,6 @@ with col_esq:
 with col_dir:
     tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", "🔍 Análise Detalhada dos Furos"])
 
-    # ABA 1: RESUMO DO PROJETO E CROQUI
     with tab_resumo:
         st.subheader("Resumo dos Furos Salvos no Projeto")
         if len(st.session_state.projeto_furos) == 0:
@@ -569,7 +653,7 @@ with col_dir:
                 recomendacao += "**Terreno superficial intermediário:** Fazer verificação de viabilidade económica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
                 
             if tem_na and nivel_agua < 5.0:
-                recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detectado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evitar estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz."
+                recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evite estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz."
             
             st.info(recomendacao)
             
@@ -581,7 +665,6 @@ with col_dir:
                     st.session_state.croqui_img = None
                     st.rerun()
             
-    # ABA 2: ANÁLISE INDIVIDUAL E GRÁFICOS
     with tab_atual:
         furos_disponiveis = {f"{nome_furo_input} (Em Edição na Tabela)": df_editado}
         for k, v in st.session_state.projeto_furos.items():
@@ -604,12 +687,16 @@ with col_dir:
         e3.metric("Desloc. Topo", f"{res_atual['deslocamento_max_mm']:.2f} mm")
         e4.metric("Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
         
-        st.markdown("### ⚙️ Interação Solo-Estrutura")
-        m1, m2 = st.columns(2)
-        m1.metric("Coef. de Mola Horizontal (K_h)", f"{res_atual['kh_global']:,.0f} kN/m³")
-        m2.metric("Coef. de Mola Vertical (K_v)", f"{res_atual['kv_global']:,.0f} kN/m³")
+        st.markdown("### ⚙️ Detalhamento da Secção e Interação P-M")
+        col_sec, col_pm = st.columns(2)
+        with col_sec:
+            fig_sec = plot_secao_transversal(B, secao, res_atual['n_barras'], bitola, bitola_estribo)
+            st.pyplot(fig_sec)
+        with col_pm:
+            fig_pm = plot_diagrama_pm(res_atual['M_rd'], fck, fyk, res_atual['Area_c'], res_atual['As_total'], carga_V, res_atual['momento_max_atuante'])
+            st.pyplot(fig_pm)
         
-        # Gráficos Dinâmicos
+        st.markdown("### 📈 Perfis Geotécnicos")
         fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
         
         ax1.plot(res_atual["df_inf"]["Rc Adm Aoki (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
@@ -703,15 +790,38 @@ def gerar_pdf_multiprojeto():
         story.append(Spacer(1, 5))
         
         # ---------------------------------------------------------------------
-        # MEMÓRIA DE CÁLCULO EXAUSTIVA (COM Kh e Kv METRO A METRO)
+        # MEMÓRIA DE CÁLCULO EXAUSTIVA E DETALHAMENTO DA ARMADURA
         # ---------------------------------------------------------------------
-        story.append(Paragraph("<b>Memória de Cálculo Detalhada (Passo a Passo)</b>", h2_style))
+        story.append(Paragraph("<b>Memória de Cálculo Detalhada e Estrutural</b>", h2_style))
         
-        txt_geo = f"<b>Geometria:</b> Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
-        txt_geo += f"<b>Estrutural:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m⁴ | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
-        txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³"
+        txt_geo = f"<b>Geometria:</b> Área da Secção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
+        txt_geo += f"<b>Betão:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m⁴ | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
+        txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³<br/>"
+        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Armadura Transv.:</b> Estribo Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
         story.append(Paragraph(txt_geo, body_style))
-        story.append(Spacer(1, 5))
+        story.append(Spacer(1, 10))
+
+        # Incluir Desenhos de Secção e PM se autorizado
+        fig_sec = plot_secao_transversal(B, secao, res['n_barras'], bitola, bitola_estribo)
+        buf_sec = io.BytesIO()
+        fig_sec.savefig(buf_sec, format='png', dpi=150, bbox_inches='tight')
+        buf_sec.seek(0)
+        plt.close(fig_sec)
+
+        if incluir_pm:
+            fig_pm = plot_diagrama_pm(res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], carga_V, res['momento_max_atuante'])
+            buf_pm = io.BytesIO()
+            fig_pm.savefig(buf_pm, format='png', dpi=150, bbox_inches='tight')
+            buf_pm.seek(0)
+            plt.close(fig_pm)
+            
+            t_img = Table([[ReportLabImage(buf_sec, width=200, height=200), ReportLabImage(buf_pm, width=200, height=200)]])
+            t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+            story.append(t_img)
+        else:
+            story.append(ReportLabImage(buf_sec, width=200, height=200))
+        
+        story.append(Spacer(1, 15))
 
         if criterio_q_adm == "Apenas Aoki-Velloso":
             txt_form = f"<b>Método Aoki-Velloso:</b> R_p = (K * N) / F1 * A_c  |  ΔR_L = (α * K * N) / F2 * U<br/>"
@@ -728,7 +838,6 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph(txt_form, body_style))
         story.append(Spacer(1, 10))
         
-        # Tabela Detalhada com Kh e Kv
         if criterio_q_adm == "Apenas Aoki-Velloso":
             data_tab = [["Prof(m)", "Solo", "N", "K", "α", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
             for idx, r in res["df_inf"].iterrows(): 
@@ -747,7 +856,7 @@ def gerar_pdf_multiprojeto():
                 data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['alpha_teix']:.0f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp_t']:.1f}", f"{r['Rl_T_Acum']:.1f}", f"{r['Rc Adm Teix (kN)']:.1f}"])
             t_m = Table(data_tab, colWidths=[40, 80, 30, 35, 65, 65, 65, 65, 80], repeatRows=1)
         
-        else: # Média ou Menor Valor (Mostra Kh, Kv e Compara os 3 métodos finais)
+        else:
             data_tab = [["Prof(m)", "Solo", "N", "Kh(kN/m³)", "Kv(kN/m³)", "Rc Aoki", "Rc Décourt", "Rc Teix.", "Rc Adot."]]
             for idx, r in res["df_inf"].iterrows(): 
                 data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rc Adm Aoki (kN)']:.0f}", f"{r['Rc Adm DQ (kN)']:.0f}", f"{r['Rc Adm Teix (kN)']:.0f}", f"{r['Rc Adm Adotada (kN)']:.0f}"])
@@ -763,16 +872,10 @@ def gerar_pdf_multiprojeto():
             ('TOPPADDING', (0,0), (-1,-1), 4)
         ]))
         story.append(t_m)
-        story.append(Spacer(1, 15))
+        story.append(PageBreak())
         
-        # GERAR GRÁFICOS DO FURO ESPECÍFICO
-        story.append(Paragraph("<b>Análise Visual e Estrutural</b>", h2_style))
-        txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>H_Rd (Força Horiz. Máx):</b> {res['H_rd']:.1f} kN | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
-        txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
-        txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg"
-        story.append(Paragraph(txt_res, body_style))
-        story.append(Spacer(1, 15))
-        
+        # GERAR GRÁFICOS DO FURO ESPECÍFICO (Página de Anexos Visuais)
+        story.append(Paragraph("<b>Análise Visual de Comportamento</b>", h2_style))
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
         ax1.plot(res["df_inf"]["Rc Adm Aoki (kN)"], res["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
         ax1.plot(res["df_inf"]["Rc Adm DQ (kN)"], res["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
@@ -781,11 +884,11 @@ def gerar_pdf_multiprojeto():
         ax1.axvline(x=carga_V, color='red', linestyle='--')
         ax1.invert_yaxis(); ax1.set_title("Resistência (kN)"); ax1.grid(True, ls="--", alpha=0.5); ax1.legend(fontsize=7)
         
-        ax2.plot(res_atual["m_flet"], res_atual["z_vals"], color="red")
-        ax2.axvline(x=res_atual["M_rd"], color='darkred', linestyle='--')
+        ax2.plot(res["m_flet"], res["z_vals"], color="red")
+        ax2.axvline(x=res["M_rd"], color='darkred', linestyle='--')
         ax2.invert_yaxis(); ax2.set_title("Momento Fletor"); ax2.grid(True, ls="--", alpha=0.5)
         
-        ax3.plot(res_atual["y_disp"]*1000, res_atual["z_vals"], color="blue")
+        ax3.plot(res["y_disp"]*1000, res["z_vals"], color="blue")
         ax3.invert_yaxis(); ax3.set_title("Elástica (mm)"); ax3.grid(True, ls="--", alpha=0.5)
         
         buf_graf = io.BytesIO()
@@ -798,10 +901,9 @@ def gerar_pdf_multiprojeto():
         
         # IMAGEM ORIGINAL DO FURO
         if dados["img"] is not None:
-            story.append(PageBreak())
             story.append(Paragraph(f"<b>Anexo Visual: Imagem Capturada do {nome_furo}</b>", h2_style))
             img_buffer = io.BytesIO(dados["img"])
-            story.append(ReportLabImage(img_buffer, width=400, height=600))
+            story.append(ReportLabImage(img_buffer, width=400, height=550, kind='proportional'))
             
         story.append(PageBreak())
         num_seccao += 1
