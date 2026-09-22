@@ -195,9 +195,9 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         rl = (solo["aoki_alpha"] * solo["aoki_K"] * n) / f2
         rp = (solo["aoki_K"] * n) / f1 * Area_c
         delta_rl = rl * Perimetro * 1.0 
-        return pd.Series([es, kv, kh, rl, rp, delta_rl])
+        return pd.Series([es, kv, kh, rl, rp, delta_rl, solo["aoki_K"], solo["aoki_alpha"]])
 
-    df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)"]] = df_spt.apply(proc_solo_aoki, axis=1)
+    df_spt[["Es (kPa)", "kv (kN/m³)", "kh (kN/m³)", "rl (kPa)", "Rp (kN)", "delta_Rl (kN)", "K_aoki", "alpha_aoki"]] = df_spt.apply(proc_solo_aoki, axis=1)
 
     cota_fim = cota_assentamento + (comprimento_estaca if tipo_fundacao == "Profunda (Estaca)" else 1.5 * B)
     df_inf = df_spt[(df_spt["Profundidade (m)"] > cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)].copy()
@@ -209,15 +209,17 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         
         # Cálculo Décourt-Quaresma
         df_inf["N_dq"] = df_inf["N_corr"].apply(lambda x: max(3, min(x, 50)))
+        df_inf["C_dq"] = df_inf["Tipo de Solo"].apply(get_dq_c)
         df_inf["delta_Rl_dq"] = beta_dq * 10 * ((df_inf["N_dq"] / 3) + 1) * Perimetro * 1.0
         df_inf["Rl_DQ_Acum"] = df_inf["delta_Rl_dq"].cumsum()
-        df_inf["Rp_dq"] = alfa_dq * df_inf["Tipo de Solo"].apply(get_dq_c) * df_inf["N_corr"] * Area_c
+        df_inf["Rp_dq"] = alfa_dq * df_inf["C_dq"] * df_inf["N_corr"] * Area_c
         df_inf["Rc Adm DQ (kN)"] = (df_inf["Rp_dq"] + df_inf["Rl_DQ_Acum"]) / 2.0
         
         # Cálculo Teixeira
+        df_inf["alpha_teix"] = df_inf["Tipo de Solo"].apply(get_teix_alpha)
         df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
         df_inf["Rl_T_Acum"] = df_inf["delta_Rl_t"].cumsum()
-        df_inf["Rp_t"] = df_inf["Tipo de Solo"].apply(get_teix_alpha) * df_inf["N_corr"] * Area_c
+        df_inf["Rp_t"] = df_inf["alpha_teix"] * df_inf["N_corr"] * Area_c
         df_inf["Rc Adm Teix (kN)"] = (df_inf["Rp_t"] + df_inf["Rl_T_Acum"]) / 2.0
 
         # Aplicação do Critério Escolhido
@@ -297,7 +299,9 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "kv_global": kv_global, "kh_global": kh_global,
         "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
         "L_armadura": L_armadura_calc, "n_barras": n_barras, "V_concreto": V_concreto, "peso_aco_total": peso_aco_total,
-        "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr
+        "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr,
+        "Area_c": Area_c, "Perimetro": Perimetro, "E_c": E_c, "Inercia_c": Inercia_c,
+        "f1": f1, "f2": f2, "alfa_dq": alfa_dq, "beta_dq": beta_dq, "beta_t": beta_t
     }
 
 
@@ -692,15 +696,67 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph(txt_cap, body_style))
         story.append(Spacer(1, 5))
         
-        story.append(Paragraph("<b>Geometria, Quantitativos e Solo-Estrutura</b>", h2_style))
-        txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>H_Rd (Força Horiz. Máx):</b> {res['H_rd']:.1f} kN | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
-        txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
-        txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg<br/>"
-        txt_res += f"<b>K_h Global:</b> {res['kh_global']:,.0f} kN/m³ | <b>K_v Global:</b> {res['kv_global']:,.0f} kN/m³"
-        story.append(Paragraph(txt_res, body_style))
+        # ---------------------------------------------------------------------
+        # NOVIDADE: MEMÓRIA DE CÁLCULO EXAUSTIVA E TRANSPARENTE
+        # ---------------------------------------------------------------------
+        story.append(Paragraph("<b>Memória de Cálculo Detalhada (Passo a Passo)</b>", h2_style))
+        
+        txt_geo = f"<b>Geometria:</b> Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
+        txt_geo += f"<b>Estrutural:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m⁴ | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
+        txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³"
+        story.append(Paragraph(txt_geo, body_style))
+        story.append(Spacer(1, 5))
+
+        # Impressão das fórmulas ativas baseada no critério
+        if criterio_q_adm == "Apenas Aoki-Velloso":
+            txt_form = f"<b>Método Aoki-Velloso:</b> R_p = (K * N) / F1 * A_c  |  ΔR_L = (α * K * N) / F2 * U<br/>"
+            txt_form += f"<b>Fatores Aplicados (Método Construtivo):</b> F1 = {res['f1']} | F2 = {res['f2']}"
+        elif criterio_q_adm == "Apenas Décourt-Quaresma":
+            txt_form = f"<b>Método Décourt-Quaresma:</b> R_p = α * C * N * A_c  |  ΔR_L = β * 10 * ((N_eq / 3) + 1) * U<br/>"
+            txt_form += f"<b>Fatores Aplicados (Método Construtivo):</b> α = {res['alfa_dq']} | β = {res['beta_dq']}"
+        elif criterio_q_adm == "Apenas Teixeira":
+            txt_form = f"<b>Método Teixeira (1996):</b> R_p = α_T * N * A_c  |  ΔR_L = β_T * N * U<br/>"
+            txt_form += f"<b>Fator β_T Aplicado:</b> {res['beta_t']}"
+        else:
+            txt_form = f"<b>Cálculos detalhados:</b> Foram avaliados os 3 métodos em paralelo, adotando-se '{criterio_q_adm}'."
+        
+        story.append(Paragraph(txt_form, body_style))
+        story.append(Spacer(1, 10))
+        
+        # Tabela Detalhada Dinâmica (Toda a Profundidade da Estaca)
+        if criterio_q_adm == "Apenas Aoki-Velloso":
+            data_tab = [["Prof(m)", "Solo", "N_SPT", "K", "α", "Rp (kN)", "Σ Rl (kN)", "Rc Adm (kN)"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['K_aoki']:.0f}", f"{r['alpha_aoki']:.3f}", f"{r['Rp (kN)']:.1f}", f"{r['Rl_Aoki_Acum']:.1f}", f"{r['Rc Adm Aoki (kN)']:.1f}"])
+            t_m = Table(data_tab, colWidths=[45, 90, 45, 45, 45, 65, 65, 80], repeatRows=1)
+        elif criterio_q_adm == "Apenas Décourt-Quaresma":
+            data_tab = [["Prof(m)", "Solo", "N_SPT", "C (kPa)", "N_eq", "Rp (kN)", "Σ Rl (kN)", "Rc Adm (kN)"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['C_dq']:.0f}", f"{r['N_dq']:.1f}", f"{r['Rp_dq']:.1f}", f"{r['Rl_DQ_Acum']:.1f}", f"{r['Rc Adm DQ (kN)']:.1f}"])
+            t_m = Table(data_tab, colWidths=[45, 90, 45, 55, 45, 60, 60, 80], repeatRows=1)
+        elif criterio_q_adm == "Apenas Teixeira":
+            data_tab = [["Prof(m)", "Solo", "N_SPT", "α_T", "Rp (kN)", "Σ Rl (kN)", "Rc Adm (kN)"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['alpha_teix']:.0f}", f"{r['Rp_t']:.1f}", f"{r['Rl_T_Acum']:.1f}", f"{r['Rc Adm Teix (kN)']:.1f}"])
+            t_m = Table(data_tab, colWidths=[50, 100, 50, 50, 70, 70, 90], repeatRows=1)
+        else: # Média ou Menor Valor (Compara tudo)
+            data_tab = [["Prof(m)", "Solo", "N_SPT", "Rc Aoki", "Rc Décourt", "Rc Teixeira", "Rc Adotada"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['Rc Adm Aoki (kN)']:.0f}", f"{r['Rc Adm DQ (kN)']:.0f}", f"{r['Rc Adm Teix (kN)']:.0f}", f"{r['Rc Adm Adotada (kN)']:.0f}"])
+            t_m = Table(data_tab, colWidths=[45, 85, 40, 70, 80, 80, 80], repeatRows=1)
+            
+        t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+        story.append(t_m)
         story.append(Spacer(1, 15))
         
         # GERAR GRÁFICOS DO FURO ESPECÍFICO
+        story.append(Paragraph("<b>Análise Visual e Estrutural</b>", h2_style))
+        txt_res = f"<b>M_Rd Estrutural:</b> {res['M_rd']:.1f} kN.m | <b>H_Rd (Força Horiz. Máx):</b> {res['H_rd']:.1f} kN | <b>Desloc Topo:</b> {res['deslocamento_max_mm']:.2f} mm<br/>"
+        txt_res += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Comprimento Gaiola:</b> {res['L_armadura']:.2f} m<br/>"
+        txt_res += f"<b>Volume Concreto:</b> {res['V_concreto']:.2f} m³ | <b>Aço Total:</b> {res['peso_aco_total']:.1f} kg"
+        story.append(Paragraph(txt_res, body_style))
+        story.append(Spacer(1, 15))
+        
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
         ax1.plot(res["df_inf"]["Rc Adm Aoki (kN)"], res["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
         ax1.plot(res["df_inf"]["Rc Adm DQ (kN)"], res["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
@@ -723,15 +779,6 @@ def gerar_pdf_multiprojeto():
         
         story.append(ReportLabImage(buf_graf, width=500, height=130))
         story.append(Spacer(1, 15))
-        
-        # TABELA DISCRETIZADA NO PDF
-        story.append(Paragraph("<b>Tabela Metro a Metro (Amostra dos 10 primeiros metros)</b>", h2_style))
-        data_tab = [["Prof(m)", "Solo", "N_SPT", "Q Aoki (kN)", "Q Décourt (kN)", "Q Adotada (kN)"]]
-        for idx, r in res["df_inf"].head(10).iterrows(): 
-            data_tab.append([f"{r['Profundidade (m)']:.0f}", str(r['Tipo de Solo'])[:10], f"{r['N_SPT']:.0f}", f"{r['Rc Adm Aoki (kN)']:.0f}", f"{r['Rc Adm DQ (kN)']:.0f}", f"{r['Rc Adm Adotada (kN)']:.0f}"])
-        t_m = Table(data_tab, colWidths=[50, 90, 50, 80, 80, 80])
-        t_m.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-        story.append(t_m)
         
         # IMAGEM ORIGINAL DO FURO
         if dados["img"] is not None:
