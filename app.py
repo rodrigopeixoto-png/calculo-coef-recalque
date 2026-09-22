@@ -512,7 +512,7 @@ with col_esq:
                 st.rerun()
                 
             if btn_offline:
-                with st.spinner("A analisar o PDF localmente sem internet..."):
+                with st.spinner("Analisando o PDF localmente sem internet..."):
                     try:
                         arquivo_pdf.seek(0)
                         with pdfplumber.open(arquivo_pdf) as pdf:
@@ -857,10 +857,10 @@ def gerar_pdf_multiprojeto():
         # ---------------------------------------------------------------------
         story.append(Paragraph("<b>Memória de Cálculo Detalhada e Estrutural</b>", h2_style))
         
-        txt_geo = f"<b>Geometria:</b> Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
+        txt_geo = f"<b>Geometria:</b> Comprimento da Estaca = {comprimento_estaca:.2f} m | Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
         txt_geo += f"<b>Concreto:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m<sup>4</sup> | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
         txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³<br/>"
-        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Armadura Transv.:</b> Estribo Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
+        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm (Comp. Gaiola: {res['L_armadura']:.2f} m) | <b>Armadura Transv.:</b> Estribo Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
 
