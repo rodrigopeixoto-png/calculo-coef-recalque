@@ -9,6 +9,7 @@ import os
 import datetime
 import fitz  # PyMuPDF
 import pdfplumber # Leitor OFFLINE (Extração Relâmpago)
+import base64 # Para serializar imagens no salvamento do projeto
 from PIL import Image as PILImage
 import google.generativeai as genai
 
@@ -70,6 +71,42 @@ if 'furo_atual_img' not in st.session_state:
     st.session_state.furo_atual_img = None
 if 'furo_atual_nome' not in st.session_state:
     st.session_state.furo_atual_nome = "SP-01"
+
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE SALVAMENTO/CARREGAMENTO DE PROJETO
+# -----------------------------------------------------------------------------
+def exportar_projeto_json():
+    dados = {
+        "furos": {},
+        "croqui": None
+    }
+    for nome, info in st.session_state.projeto_furos.items():
+        img_b64 = base64.b64encode(info["img"]).decode('utf-8') if info["img"] else None
+        dados["furos"][nome] = {
+            "df": info["df"].to_dict(orient="records"),
+            "img": img_b64
+        }
+    if st.session_state.croqui_img:
+        dados["croqui"] = base64.b64encode(st.session_state.croqui_img).decode('utf-8')
+        
+    return json.dumps(dados)
+
+def carregar_projeto_json(json_str):
+    try:
+        dados = json.loads(json_str)
+        st.session_state.projeto_furos = {}
+        for nome, info in dados.get("furos", {}).items():
+            df = pd.DataFrame(info["df"])
+            img_bytes = base64.b64decode(info["img"]) if info.get("img") else None
+            st.session_state.projeto_furos[nome] = {"df": df, "img": img_bytes}
+            
+        if dados.get("croqui"):
+            st.session_state.croqui_img = base64.b64decode(dados["croqui"])
+        else:
+            st.session_state.croqui_img = None
+        return True
+    except Exception as e:
+        return False
 
 # -----------------------------------------------------------------------------
 # SIDEBAR - CABEÇALHO INSTITUCIONAL E PARÂMETROS GLOBAIS
@@ -149,6 +186,34 @@ if override_l:
 st.sidebar.markdown("---")
 st.sidebar.header("📄 Relatório PDF")
 incluir_pm = st.sidebar.checkbox("Incluir Diagrama de Interação P-M?", value=True)
+
+# GERAÇÃO DO ARQUIVO .UTEA
+st.sidebar.markdown("---")
+st.sidebar.header("💾 Gestão do Arquivo do Projeto")
+st.sidebar.info("Guarde o seu trabalho para continuar mais tarde.")
+
+# Botão de Exportar
+json_projeto = exportar_projeto_json()
+nome_arquivo_utea = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20] if nome_obra else "Projeto"
+st.sidebar.download_button(
+    label="⬇️ Guardar Projeto (.utea)",
+    data=json_projeto,
+    file_name=f"{nome_arquivo_utea}.utea",
+    mime="application/json",
+    use_container_width=True
+)
+
+# Upload de Projeto
+upload_proj = st.sidebar.file_uploader("⬆️ Abrir Projeto Guardado (.utea)", type=["utea", "json"])
+if upload_proj is not None:
+    if st.sidebar.button("Carregar Dados do Arquivo", use_container_width=True):
+        json_lido = upload_proj.read().decode('utf-8')
+        sucesso = carregar_projeto_json(json_lido)
+        if sucesso:
+            st.sidebar.success("Projeto carregado com sucesso!")
+            st.rerun()
+        else:
+            st.sidebar.error("Erro ao carregar o arquivo. Formato inválido.")
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES DE DESENHO (SEÇÃO E DIAGRAMA P-M)
@@ -506,7 +571,11 @@ with col_esq:
                             REGRAS: 1. Profundidade: apenas número. 2. N_SPT: golpes finais (se fração, só o numerador). 3. Tipo: {", ".join(OPCOES_SOLO)}"""
                             
                             resposta = modelo.generate_content([prompt, img])
-                            texto_limpo = resposta.text.replace("```csv", "").replace("```", "").strip()
+                            
+                            texto_limpo = resposta.text
+                            texto_limpo = texto_limpo.replace("```csv", "")
+                            texto_limpo = texto_limpo.replace("```", "")
+                            texto_limpo = texto_limpo.strip()
                             
                             df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
                             df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
@@ -539,6 +608,7 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
+    # Tabela de Edição / Copy-Paste do Excel
     st.markdown("---")
     st.write(f"**Tabela de Preenchimento: {nome_furo_input}** (Aceita Colar do Excel)")
     df_editado = st.data_editor(
@@ -732,7 +802,6 @@ def gerar_pdf_multiprojeto():
         im = ReportLabImage(logo_path, width=150, height=60)
         im.hAlign = 'LEFT'
         
-        # CABEÇALHO ATUALIZADO COM O CREA
         crea_texto = f" - <b>CREA:</b> {registro_crea}" if registro_crea.strip() != "" else ""
         t_cab = Table([[im, Paragraph(f"<b>OBRA:</b> {nome_obra}<br/><b>RESP. TÉCNICO:</b> {resp_tecnico}{crea_texto}<br/><b>DATA:</b> {datetime.datetime.now().strftime('%d/%m/%Y')}", ParagraphStyle('CabInfo', parent=body_style, alignment=2))]], colWidths=[160, 340])
         
