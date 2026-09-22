@@ -192,7 +192,6 @@ st.sidebar.markdown("---")
 st.sidebar.header("💾 Gestão do Arquivo do Projeto")
 st.sidebar.info("Guarde o seu trabalho para continuar mais tarde.")
 
-# Botão de Exportar
 json_projeto = exportar_projeto_json()
 nome_arquivo_utea = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20] if nome_obra else "Projeto"
 st.sidebar.download_button(
@@ -203,7 +202,6 @@ st.sidebar.download_button(
     use_container_width=True
 )
 
-# Upload de Projeto
 upload_proj = st.sidebar.file_uploader("⬆️ Abrir Projeto Guardado (.utea)", type=["utea", "json"])
 if upload_proj is not None:
     if st.sidebar.button("Carregar Dados do Arquivo", use_container_width=True):
@@ -216,7 +214,7 @@ if upload_proj is not None:
             st.sidebar.error("Erro ao carregar o arquivo. Formato inválido.")
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE DESENHO (SEÇÃO E DIAGRAMA P-M)
+# FUNÇÕES DE DESENHO (SEÇÃO, PERFIL LONGITUDINAL E DIAGRAMA P-M)
 # -----------------------------------------------------------------------------
 def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
     fig, ax = plt.subplots(figsize=(4, 4))
@@ -264,6 +262,41 @@ def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_est
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title(f"Armadura: {n_barras} Φ {bitola_long_mm:.1f} mm\nEstribo: Φ {bitola_estribo_mm:.1f} c/ {espacamento_estribo:.0f}cm", fontsize=10)
+    return fig
+
+def plot_perfil_longitudinal(B_m, comp_estaca, L_armadura, espacamento_estribo_cm):
+    fig, ax = plt.subplots(figsize=(1.5, 4))
+    cob = 0.05
+    raio_arm = B_m/2 - cob
+
+    # Estaca Concreto
+    ax.plot([-B_m/2, -B_m/2], [0, -comp_estaca], color='black', lw=1.5)
+    ax.plot([B_m/2, B_m/2], [0, -comp_estaca], color='black', lw=1.5)
+    ax.plot([-B_m/2, B_m/2], [-comp_estaca, -comp_estaca], color='black', lw=1.5)
+    ax.plot([-B_m/2, B_m/2], [0, 0], color='black', lw=1.5)
+    ax.fill_betweenx([0, -comp_estaca], -B_m/2, B_m/2, color='#E0E0E0', alpha=0.5)
+
+    # Armadura Longitudinal (Gaiola)
+    ax.plot([-raio_arm, -raio_arm], [0, -L_armadura], color='red', lw=2)
+    ax.plot([raio_arm, raio_arm], [0, -L_armadura], color='red', lw=2)
+    ax.plot([-raio_arm, raio_arm], [-L_armadura, -L_armadura], color='red', lw=2)
+
+    # Estribos Verticais
+    esp_m = espacamento_estribo_cm / 100
+    z_estribos = np.arange(0, -L_armadura, -esp_m)
+    for z in z_estribos:
+        ax.plot([-raio_arm, raio_arm], [z, z], color='red', lw=0.5)
+
+    ax.set_xlim(-B_m*1.5, B_m*1.5)
+    ax.set_ylim(-comp_estaca - 0.5, 0.5)
+    ax.set_xticks([])
+    ax.set_ylabel("Profundidade (m)", fontsize=8)
+    ax.set_title("Perfil", fontsize=10)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    
+    fig.tight_layout()
     return fig
 
 def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
@@ -435,8 +468,11 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     
     As_total = n_barras * area_barra
     V_concreto = Area_c * comprimento_estaca
+    
+    # Qtd de estribos e peso total de aço
+    qtd_estribos = int(L_armadura_calc / (espacamento_estribo / 100))
     peso_long = As_total * L_armadura_calc * 7850
-    peso_estribo = int(L_armadura_calc / (espacamento_estribo/100)) * (np.pi * (B - 0.10) if secao == "Circular" else 4 * (B - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
+    peso_estribo = qtd_estribos * (np.pi * (B - 0.10) if secao == "Circular" else 4 * (B - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
     peso_aco_total = peso_long + peso_estribo
 
     return {
@@ -446,6 +482,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "kv_global": kv_global, "kh_global": kh_global,
         "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
         "L_armadura": L_armadura_calc, "n_barras": n_barras, "V_concreto": V_concreto, "peso_aco_total": peso_aco_total,
+        "qtd_estribos": qtd_estribos,
         "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr,
         "Area_c": Area_c, "Perimetro": Perimetro, "E_c": E_c, "Inercia_c": Inercia_c,
         "f1": f1, "f2": f2, "alfa_dq": alfa_dq, "beta_dq": beta_dq, "beta_t": beta_t, "As_total": As_total
@@ -740,18 +777,30 @@ with col_dir:
         c3.metric("Décourt-Quaresma", f"{res_atual['Q_adm_dq']:,.1f} kN")
         c4.metric("Teixeira", f"{res_atual['Q_adm_t']:,.1f} kN")
         
-        st.markdown("### 🏗️ Estrutural e Quantitativos")
+        st.markdown("### 🏗️ Estrutural e Interação Solo-Estrutura")
         e1, e2, e3, e4 = st.columns(4)
-        e1.metric("M_Rd (Momento)", f"{res_atual['M_rd']:.1f} kN.m")
+        e1.metric("M_Rd (Momento Resist.)", f"{res_atual['M_rd']:.1f} kN.m")
         e2.metric("H_Rd (Horiz. Máx)", f"{res_atual['H_rd']:.1f} kN")
-        e3.metric("Desloc. Topo", f"{res_atual['deslocamento_max_mm']:.2f} mm")
-        e4.metric("Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
+        e3.metric("Coef. de Mola (K_h)", f"{res_atual['kh_global']:,.0f} kN/m³")
+        e4.metric("Desloc. Topo", f"{res_atual['deslocamento_max_mm']:.2f} mm")
         
-        st.markdown("### ⚙️ Detalhamento da Seção e Interação P-M")
-        col_sec, col_pm = st.columns(2)
+        st.markdown("### ⚙️ Detalhamento Estrutural e Armaduras")
+        
+        # Novas métricas completas com quantitativos exatos da estaca e aço
+        c_det1, c_det2, c_det3, c_det4 = st.columns(4)
+        c_det1.metric("Vol. Concreto (Estaca)", f"{res_atual['V_concreto']:.2f} m³")
+        c_det2.metric("Peso Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
+        c_det3.metric("Armadura Long.", f"{res_atual['n_barras']} un - {res_atual['L_armadura']:.2f} m")
+        c_det4.metric("Qtd. Estribos", f"{res_atual['qtd_estribos']} un")
+        
+        # Grid para abrigar a Seção, o Perfil Longitudinal e o Diagrama P-M
+        col_sec, col_long, col_pm = st.columns([1, 0.8, 1.5])
         with col_sec:
             fig_sec = plot_secao_transversal(B, secao, res_atual['n_barras'], bitola, bitola_estribo)
             st.pyplot(fig_sec)
+        with col_long:
+            fig_long = plot_perfil_longitudinal(B, comprimento_estaca, res_atual['L_armadura'], espacamento_estribo)
+            st.pyplot(fig_long)
         with col_pm:
             fig_pm = plot_diagrama_pm(res_atual['M_rd'], fck, fyk, res_atual['Area_c'], res_atual['As_total'], carga_V, res_atual['momento_max_atuante'])
             st.pyplot(fig_pm)
@@ -860,16 +909,23 @@ def gerar_pdf_multiprojeto():
         txt_geo = f"<b>Geometria:</b> Comprimento da Estaca = {comprimento_estaca:.2f} m | Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
         txt_geo += f"<b>Concreto:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m<sup>4</sup> | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
         txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³<br/>"
-        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm (Comp. Gaiola: {res['L_armadura']:.2f} m) | <b>Armadura Transv.:</b> Estribo Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
+        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm (Comp. Gaiola: {res['L_armadura']:.2f} m) | <b>Armadura Transv.:</b> {res['qtd_estribos']} Estribos Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
+        txt_geo += f"<b>Quantitativos da Estaca:</b> Volume de Concreto = {res['V_concreto']:.2f} m³ | Peso Total de Aço = {res['peso_aco_total']:.1f} kg<br/>"
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
 
-        # Incluir Desenhos de Seção e PM se autorizado
+        # Incluir Desenhos de Seção, Perfil e PM se autorizado
         fig_sec = plot_secao_transversal(B, secao, res['n_barras'], bitola, bitola_estribo)
         buf_sec = io.BytesIO()
         fig_sec.savefig(buf_sec, format='png', dpi=150, bbox_inches='tight')
         buf_sec.seek(0)
         plt.close(fig_sec)
+        
+        fig_long = plot_perfil_longitudinal(B, comprimento_estaca, res['L_armadura'], espacamento_estribo)
+        buf_long = io.BytesIO()
+        fig_long.savefig(buf_long, format='png', dpi=150, bbox_inches='tight')
+        buf_long.seek(0)
+        plt.close(fig_long)
 
         if incluir_pm:
             fig_pm = plot_diagrama_pm(res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], carga_V, res['momento_max_atuante'])
@@ -878,11 +934,13 @@ def gerar_pdf_multiprojeto():
             buf_pm.seek(0)
             plt.close(fig_pm)
             
-            t_img = Table([[ReportLabImage(buf_sec, width=200, height=200), ReportLabImage(buf_pm, width=200, height=200)]])
-            t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+            t_img = Table([[ReportLabImage(buf_sec, width=150, height=150), ReportLabImage(buf_long, width=75, height=150), ReportLabImage(buf_pm, width=150, height=150)]])
+            t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
             story.append(t_img)
         else:
-            story.append(ReportLabImage(buf_sec, width=200, height=200))
+            t_img = Table([[ReportLabImage(buf_sec, width=200, height=200), ReportLabImage(buf_long, width=100, height=200)]])
+            t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
+            story.append(t_img)
         
         story.append(Spacer(1, 15))
 
