@@ -91,7 +91,7 @@ if tipo_fundacao == "Profunda (Estaca)":
 else:
     metodo_construtivo = "Raiz/Hélice"
 
-secao = st.sidebar.selectbox("Geometria da Secção", ["Circular", "Quadrada"])
+secao = st.sidebar.selectbox("Geometria da Seção", ["Circular", "Quadrada"])
 B = st.sidebar.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.30, step=0.05)
 cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value=0.0, value=0.0, step=0.5)
 comprimento_estaca = st.sidebar.number_input("Comprimento da Estaca (m)", min_value=1.0, value=15.0, step=0.5) if tipo_fundacao == "Profunda (Estaca)" else 0.0
@@ -117,7 +117,7 @@ nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, 
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
-fck = st.sidebar.number_input("Resistência do Betão (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
+fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
 fyk = st.sidebar.number_input("Resistência do Aço (fyk) em MPa", min_value=250.0, value=500.0, step=50.0)
 
@@ -150,22 +150,19 @@ st.sidebar.header("📄 Relatório PDF")
 incluir_pm = st.sidebar.checkbox("Incluir Diagrama de Interação P-M?", value=True)
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE DESENHO (SECÇÃO E DIAGRAMA P-M)
+# FUNÇÕES DE DESENHO (SEÇÃO E DIAGRAMA P-M)
 # -----------------------------------------------------------------------------
 def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
     fig, ax = plt.subplots(figsize=(4, 4))
-    cob = 0.05  # Recobrimento fixo de 5cm
+    cob = 0.05  
     
     if secao_tipo == "Circular":
-        # Betão
         circle_ext = plt.Circle((0, 0), B_m/2, color='#E0E0E0', ec='black', lw=1.5, zorder=1)
-        # Estribo (Espiral ou Circular)
         raio_estribo = B_m/2 - cob
         circle_int = plt.Circle((0, 0), raio_estribo, color='none', ec='red', lw=1.5, zorder=2)
         ax.add_patch(circle_ext)
         ax.add_patch(circle_int)
         
-        # Barras longitudinais
         angles = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
         r_barras = raio_estribo - (bitola_estribo_mm/2000) - (bitola_long_mm/2000)
         for angle in angles:
@@ -174,16 +171,13 @@ def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_est
             rebar = plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3)
             ax.add_patch(rebar)
             
-    else: # Quadrada
-        # Betão
+    else: 
         rect_ext = plt.Rectangle((-B_m/2, -B_m/2), B_m, B_m, color='#E0E0E0', ec='black', lw=1.5, zorder=1)
-        # Estribo
         L_estribo = B_m - 2*cob
         rect_int = plt.Rectangle((-L_estribo/2, -L_estribo/2), L_estribo, L_estribo, color='none', ec='red', lw=1.5, zorder=2)
         ax.add_patch(rect_ext)
         ax.add_patch(rect_int)
         
-        # Barras longitudinais distribuídas no perímetro do estribo
         L_barras = L_estribo - (bitola_estribo_mm/1000) - (bitola_long_mm/1000)
         perimetro = 4 * L_barras
         for i in range(n_barras):
@@ -207,16 +201,14 @@ def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_est
     return fig
 
 def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
-    # Cálculo aproximado da Envoltória de Interação (Método Simplificado de Bresler/Parabólico)
-    fcd = (fck / 1.4) * 1000  # kPa
-    fyd = (fyk / 1.15) * 1000 # kPa
+    fcd = (fck / 1.4) * 1000 
+    fyd = (fyk / 1.15) * 1000 
     
     N_max_comp = 0.85 * fcd * Area_c + fyd * As
     N_max_trac = -fyd * As
-    N_bal = 0.35 * N_max_comp # Ponto balanceado aproximado
-    M_bal = 1.35 * M_rd       # Momento máximo ocorre com alguma compressão
+    N_bal = 0.35 * N_max_comp 
+    M_bal = 1.35 * M_rd       
     
-    # Gerar a curva
     N_vals = np.linspace(N_max_trac, N_max_comp, 100)
     M_vals = []
     
@@ -224,10 +216,8 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
         if n < 0:
             m = M_rd * (1 - (n/N_max_trac)**2)
         elif n < N_bal:
-            # Ramo inferior de compressão (ganho de momento)
             m = M_rd + (M_bal - M_rd) * ((n/N_bal)**0.65)
         else:
-            # Ramo superior de compressão (perda de momento)
             m = M_bal * (1 - ((n - N_bal)/(N_max_comp - N_bal))**1.8)
         M_vals.append(max(0, m))
         
@@ -235,7 +225,6 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
     ax.plot(M_vals, N_vals, color='#1E3A8A', lw=2, label='Envoltória Resistente')
     ax.fill_betweenx(N_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
     
-    # Ponto de atuação
     ax.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante ($S_d$)')
     
     ax.axhline(0, color='black', linewidth=1)
@@ -504,7 +493,7 @@ with col_esq:
             if btn_ia:
                 if not api_key: st.warning("Insira a chave de API primeiro.")
                 else:
-                    with st.spinner("A ler tabela na nuvem..."):
+                    with st.spinner("Lendo tabela na nuvem..."):
                         try:
                             genai.configure(api_key=api_key)
                             modelo = genai.GenerativeModel('gemini-3.6-flash')
@@ -687,7 +676,7 @@ with col_dir:
         e3.metric("Desloc. Topo", f"{res_atual['deslocamento_max_mm']:.2f} mm")
         e4.metric("Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
         
-        st.markdown("### ⚙️ Detalhamento da Secção e Interação P-M")
+        st.markdown("### ⚙️ Detalhamento da Seção e Interação P-M")
         col_sec, col_pm = st.columns(2)
         with col_sec:
             fig_sec = plot_secao_transversal(B, secao, res_atual['n_barras'], bitola, bitola_estribo)
@@ -794,14 +783,14 @@ def gerar_pdf_multiprojeto():
         # ---------------------------------------------------------------------
         story.append(Paragraph("<b>Memória de Cálculo Detalhada e Estrutural</b>", h2_style))
         
-        txt_geo = f"<b>Geometria:</b> Área da Secção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
-        txt_geo += f"<b>Betão:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m⁴ | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
+        txt_geo = f"<b>Geometria:</b> Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
+        txt_geo += f"<b>Concreto:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m<sup>4</sup> | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
         txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³<br/>"
         txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Armadura Transv.:</b> Estribo Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
 
-        # Incluir Desenhos de Secção e PM se autorizado
+        # Incluir Desenhos de Seção e PM se autorizado
         fig_sec = plot_secao_transversal(B, secao, res['n_barras'], bitola, bitola_estribo)
         buf_sec = io.BytesIO()
         fig_sec.savefig(buf_sec, format='png', dpi=150, bbox_inches='tight')
@@ -823,21 +812,40 @@ def gerar_pdf_multiprojeto():
         
         story.append(Spacer(1, 15))
 
-        if criterio_q_adm == "Apenas Aoki-Velloso":
-            txt_form = f"<b>Método Aoki-Velloso:</b> R_p = (K * N) / F1 * A_c  |  ΔR_L = (α * K * N) / F2 * U<br/>"
-            txt_form += f"<b>Fatores Aplicados:</b> F1 = {res['f1']} | F2 = {res['f2']}"
-        elif criterio_q_adm == "Apenas Décourt-Quaresma":
-            txt_form = f"<b>Método Décourt-Quaresma:</b> R_p = α * C * N * A_c  |  ΔR_L = β * 10 * ((N_eq / 3) + 1) * U<br/>"
-            txt_form += f"<b>Fatores Aplicados:</b> α = {res['alfa_dq']} | β = {res['beta_dq']}"
-        elif criterio_q_adm == "Apenas Teixeira":
-            txt_form = f"<b>Método Teixeira (1996):</b> R_p = α_T * N * A_c  |  ΔR_L = β_T * N * U<br/>"
-            txt_form += f"<b>Fator β_T Aplicado:</b> {res['beta_t']}"
-        else:
-            txt_form = f"<b>Cálculos detalhados:</b> Foram avaliados os 3 métodos em paralelo, adotando-se '{criterio_q_adm}'."
+        # --- AQUI VEM O DETALHAMENTO DAS EQUAÇÕES ---
+        story.append(Paragraph("<b>Equações Analíticas Utilizadas</b>", h2_style))
+        eq_style = ParagraphStyle('EQ', parent=body_style, leftIndent=15, spaceBefore=2, spaceAfter=2, fontSize=8)
+        legenda_style = ParagraphStyle('LEG', parent=body_style, leftIndent=0, spaceBefore=4, spaceAfter=10, fontSize=7, textColor=colors.grey)
+
+        if criterio_q_adm in ["Apenas Aoki-Velloso", "Média dos Métodos", "Menor Valor (Mais Conservador)"]:
+            story.append(Paragraph("<b>Método de Aoki-Velloso (1975):</b>", body_style))
+            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = (K · N<sub>SPT</sub> / F<sub>1</sub>) · A<sub>c</sub>", eq_style))
+            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ (α · K · N<sub>SPT</sub> / F<sub>2</sub>) · U · Δz ]", eq_style))
+            story.append(Paragraph(f"• Fatores Adotados para Estaca {metodo_construtivo}: F<sub>1</sub> = {res['f1']} | F<sub>2</sub> = {res['f2']}", eq_style))
+            story.append(Spacer(1, 4))
+
+        if criterio_q_adm in ["Apenas Décourt-Quaresma", "Média dos Métodos", "Menor Valor (Mais Conservador)"]:
+            story.append(Paragraph("<b>Método de Décourt-Quaresma (1996):</b>", body_style))
+            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = α · C · N<sub>SPT</sub> · A<sub>c</sub>", eq_style))
+            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ β · 10 · ((N<sub>eq</sub> / 3) + 1) · U · Δz ]", eq_style))
+            story.append(Paragraph(f"• Fatores Adotados para Estaca {metodo_construtivo}: α = {res['alfa_dq']} | β = {res['beta_dq']}", eq_style))
+            story.append(Spacer(1, 4))
+
+        if criterio_q_adm in ["Apenas Teixeira", "Média dos Métodos", "Menor Valor (Mais Conservador)"]:
+            story.append(Paragraph("<b>Método de Teixeira (1996):</b>", body_style))
+            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = α<sub>T</sub> · N<sub>SPT</sub> · A<sub>c</sub>", eq_style))
+            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ β<sub>T</sub> · N<sub>SPT</sub> · U · Δz ]", eq_style))
+            story.append(Paragraph(f"• Fatores Adotados para Estaca {metodo_construtivo}: β<sub>T</sub> = {res['beta_t']}", eq_style))
+            story.append(Spacer(1, 4))
+
+        story.append(Paragraph("<b>Modelo Estrutural e Interação Solo-Estrutura (Winkler):</b>", body_style))
+        story.append(Paragraph("• Fator de Rigidez Relativa: λ = [ (K<sub>h</sub> · B) / (4 · E<sub>c</sub> · I<sub>c</sub>) ]<sup>0.25</sup>", eq_style))
+        story.append(Paragraph("• Deslocamento Lateral: y(z) = [e<sup>-λz</sup> / (2 E<sub>c</sub> I<sub>c</sub> λ³)] · [H cos(λz) + λ M (cos(λz) + sin(λz))]", eq_style))
+
+        txt_legenda = "<i><u>Nomenclatura:</u> <b>A<sub>c</sub></b> = Área da Seção; <b>U</b> = Perímetro; <b>Δz</b> = Incremento de profundidade; <b>N<sub>SPT</sub></b> = Índice de penetração; <b>K, C, α, β</b> = Parâmetros do solo; <b>H</b> = Força Horizontal; <b>M</b> = Momento Fletor.</i>"
+        story.append(Paragraph(txt_legenda, legenda_style))
         
-        story.append(Paragraph(txt_form, body_style))
-        story.append(Spacer(1, 10))
-        
+        # Tabela Detalhada com Kh e Kv
         if criterio_q_adm == "Apenas Aoki-Velloso":
             data_tab = [["Prof(m)", "Solo", "N", "K", "α", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
             for idx, r in res["df_inf"].iterrows(): 
