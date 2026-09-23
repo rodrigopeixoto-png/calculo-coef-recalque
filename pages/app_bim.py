@@ -16,86 +16,108 @@ st.title("🏢 Gestor BIM & Orçamento de Fundações")
 st.caption("Leitura Nativa de CAD (.DXF) com Radar Geométrico e Importação de Excel")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO: RADAR GEOMÉTRICO PARA TABELAS DXF (PADRÃO EBERICK)
+# FUNÇÃO: RADAR GEOMÉTRICO BLINDADO PARA TABELAS DXF (PADRÃO EBERICK)
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
     # 1. Lê o ficheiro DXF
     text_stream = io.StringIO(dxf_bytes.decode('utf-8', errors='ignore'))
     doc = ezdxf.read(text_stream)
-    msp = doc.modelspace()
     
-    # 2. Varre o desenho à procura de todos os Textos
     textos_brutos = []
-    for e in msp.query('TEXT MTEXT'):
-        texto = e.dxf.text if e.dxftype() == 'TEXT' else e.text
-        # Limpar lixo de formatação do AutoCAD (ex: \A1; \pxqc; {})
-        texto_limpo = re.sub(r'\\[A-Za-z0-9~]+;', '', str(texto)).strip()
-        texto_limpo = texto_limpo.replace('{', '').replace('}', '')
-        
-        if texto_limpo:
-            textos_brutos.append({
-                'Texto': texto_limpo, 
-                'X': e.dxf.insert.x, 
-                'Y': e.dxf.insert.y
-            })
-            
-    if not textos_brutos: return None
+    
+    # 2. Função interna para limpar textos sujos do AutoCAD
+    def limpar_texto(txt):
+        t = re.sub(r'\\[A-Za-z0-9~]+;', '', str(txt)).strip()
+        return t.replace('{', '').replace('}', '')
 
-    # 3. Mapear onde estão as Colunas (Eixo X)
+    # 3. Varrer Modelspace (Textos soltos e Textos dentro de Blocos)
+    for e in doc.modelspace():
+        if e.dxftype() in ('TEXT', 'MTEXT'):
+            t = e.dxf.text if e.dxftype() == 'TEXT' else e.text
+            t_limpo = limpar_texto(t)
+            if t_limpo:
+                textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
+                
+        elif e.dxftype() == 'INSERT':
+            # Ler atributos de bloco
+            for attrib in e.attribs:
+                t_limpo = limpar_texto(attrib.dxf.text)
+                if t_limpo: 
+                    textos_brutos.append({'Texto': t_limpo, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
+            # Ler entidades dentro da definição do bloco
+            block = doc.blocks.get(e.dxf.name)
+            if block:
+                for entity in block.query('TEXT MTEXT'):
+                    t = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
+                    t_limpo = limpar_texto(t)
+                    if t_limpo:
+                        # Soma a coordenada local do bloco com a global da inserção
+                        textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
+
+    if not textos_brutos: 
+        return None, pd.DataFrame()
+
+    df_raw = pd.DataFrame(textos_brutos)
+    
+    # 4. Encontrar X dos cabeçalhos principais (Mapeamento Flexível)
     headers_x = {'x': None, 'y': None, 'carga': None, 'ne': None, 'estaca': None}
     
-    for t in textos_brutos:
-        val = t['Texto'].lower().strip()
-        if val in ['x', 'x (cm)', 'x(cm)']: headers_x['x'] = t['X']
-        elif val in ['y', 'y (cm)', 'y(cm)']: headers_x['y'] = t['X']
-        elif 'carga' in val and ('máx' in val or 'max' in val): headers_x['carga'] = t['X']
-        elif val == 'ne': headers_x['ne'] = t['X']
-        elif val == 'estaca': headers_x['estaca'] = t['X']
+    for index, row in df_raw.iterrows():
+        val = str(row['Texto']).lower().strip()
+        if val in ['x', 'x(cm)', 'x (cm)']: headers_x['x'] = row['X']
+        elif val in ['y', 'y(cm)', 'y (cm)']: headers_x['y'] = row['X']
+        elif 'carga' in val and ('máx' in val or 'max' in val or 'tf' in val): headers_x['carga'] = row['X']
+        elif val == 'ne': headers_x['ne'] = row['X']
+        elif val == 'estaca': headers_x['estaca'] = row['X']
 
-    # Se falhar o 'Carga Máx', caça só a palavra 'Carga'
+    # Resgate caso a palavra 'Carga Máx' esteja partida
     if headers_x['carga'] is None:
-        for t in textos_brutos:
-            if 'carga' in t['Texto'].lower(): headers_x['carga'] = t['X']
+        for index, row in df_raw.iterrows():
+            if 'carga' in str(row['Texto']).lower(): headers_x['carga'] = row['X']
 
-    # 4. Caçar os Pilares (Ex: P1, P12) para mapear as Linhas (Eixo Y)
-    pilares = [t for t in textos_brutos if re.match(r'^P\s*\d+$', t['Texto'].strip(), re.IGNORECASE)]
+    # 5. Caçar os Pilares (Ex: P1, P20)
+    pilares = df_raw[df_raw['Texto'].str.match(r'^P\s*\d+$', case=False)]
     
-    # 5. Cruzar Linhas e Colunas (A Batalha Naval)
     linhas_dados = []
-    for p in pilares:
+    # 6. Batalha Naval: Cruzar o Y do Pilar com o X do Cabeçalho
+    for _, p in pilares.iterrows():
         y_ref = p['Y']
-        # Pega todos os textos que estão na mesma altura deste pilar (margem de 30 unidades CAD)
-        textos_linha = [t for t in textos_brutos if abs(t['Y'] - y_ref) <= 30.0]
+        # Pega todos os textos que estão na mesma linha horizontal (Tolerância de 35 unidades)
+        linha_textos = df_raw[abs(df_raw['Y'] - y_ref) <= 35.0].copy()
         
-        def pega_texto_da_coluna(chave_header):
-            x_alvo = headers_x[chave_header]
-            if x_alvo is None or not textos_linha: return None
-            # Dos textos desta linha, qual está perfeitamente alinhado com o X do cabeçalho?
-            texto_coluna = min(textos_linha, key=lambda item: abs(item['X'] - x_alvo))
-            return texto_coluna['Texto']
+        def pega_valor(chave):
+            x_alvo = headers_x[chave]
+            if x_alvo is None or len(linha_textos) == 0: return None
+            # Encontra o texto mais próximo da coluna visual
+            linha_textos['Dist'] = abs(linha_textos['X'] - x_alvo)
+            texto_perto = linha_textos.loc[linha_textos['Dist'].idxmin()]
+            if texto_perto['Dist'] < 60.0: # Margem de erro de alinhamento
+                return str(texto_perto['Texto'])
+            return None
             
         linhas_dados.append({
-            "Pilar": p['Texto'].strip(),
-            "X_cm": pega_texto_da_coluna('x'),
-            "Y_cm": pega_texto_da_coluna('y'),
-            "Carga_Max_tf": pega_texto_da_coluna('carga'),
-            "ne": pega_texto_da_coluna('ne'),
-            "Estaca": pega_texto_da_coluna('estaca')
+            "Pilar": str(p['Texto']).strip(),
+            "X_cm": pega_valor('x'),
+            "Y_cm": pega_valor('y'),
+            "Carga_Max_tf": pega_valor('carga'),
+            "ne": pega_valor('ne'),
+            "Estaca": pega_valor('estaca')
         })
         
     df_final = pd.DataFrame(linhas_dados)
     
-    # 6. Limpeza e Conversão Numérica
+    # 7. Limpeza Final
     for col in ["X_cm", "Y_cm", "Carga_Max_tf", "ne"]:
         if col in df_final.columns:
-            # Extrai apenas os números e substitui vírgula por ponto
             df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace(',', '.').str.extract(r'([-+]?\d*\.?\d+)')[0], errors='coerce')
             
     df_final = df_final.dropna(subset=['Pilar'])
     
-    if len(df_final) > 0:
-        return df_final
-    return pd.DataFrame(textos_brutos) # Fallback: se tudo falhar, exibe os textos brutos para debugar
+    # Valida se a missão foi bem sucedida
+    if len(df_final) > 0 and headers_x['x'] is not None and headers_x['y'] is not None:
+        return df_final, df_raw
+        
+    return None, df_raw
 
 # -----------------------------------------------------------------------------
 # BARRA LATERAL (IMPORTAÇÃO E PARÂMETROS)
@@ -113,15 +135,14 @@ if arquivo_upload is not None:
     if ext == 'dxf':
         with st.spinner("A varrer o desenho CAD com o Radar Geométrico..."):
             try:
-                df_extraido = extrair_tabela_do_dxf(arquivo_upload.getvalue())
+                df_extraido, df_raw_debug = extrair_tabela_do_dxf(arquivo_upload.getvalue())
                 
-                # Se as colunas mágicas foram encontradas e processadas
                 if df_extraido is not None and "Carga_Max_tf" in df_extraido.columns:
                     st.session_state.df_projeto = df_extraido
                     st.sidebar.success(f"Tabela CAD lida na perfeição! ({len(df_extraido)} blocos extraídos)")
                 else:
-                    st.sidebar.warning("Aviso: O radar não encontrou os cabeçalhos padrão. Exibindo os textos brutos.")
-                    st.session_state.df_projeto = df_extraido
+                    st.sidebar.warning("⚠️ O radar não encontrou os cabeçalhos padrão. Exibindo os textos brutos na tela principal para investigação.")
+                    st.session_state.df_projeto = df_raw_debug
                     
             except Exception as e:
                 st.sidebar.error(f"Erro ao ler o DXF: {e}")
@@ -135,7 +156,6 @@ if arquivo_upload is not None:
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Parâmetros para Orçamento")
-st.sidebar.markdown("*(Futuramente, estes dados serão importados do seu ficheiro .utea)*")
 profundidade_media = st.sidebar.number_input("Profundidade Média das Estacas (m)", value=12.0, step=0.5)
 taxa_aco_estimada = st.sidebar.number_input("Taxa de Aço Média (kg/m³ de betão)", value=85.0, step=5.0)
 
@@ -145,8 +165,8 @@ taxa_aco_estimada = st.sidebar.number_input("Taxa de Aço Média (kg/m³ de bet�
 if st.session_state.df_projeto is not None:
     df = st.session_state.df_projeto.copy()
     
-    # Valida se o radar resultou na tabela bonitinha (tem a coluna X_cm)
-    if "X_cm" in df.columns and "Y_cm" in df.columns:
+    # Verifica se a tabela já passou pelo filtro inteligente do DXF/Excel
+    if "Pilar" in df.columns and "X_cm" in df.columns:
         
         # 1. Tratar os dados para o Orçamento e Desenho
         df["X_m"] = df["X_cm"].fillna(0) / 100.0
@@ -219,8 +239,10 @@ if st.session_state.df_projeto is not None:
             st.success("Temos as Coordenadas, os Diâmetros, o número de estacas e as Cargas extraídas do CAD perfeitamente. O próximo passo de desenvolvimento será importar a biblioteca 'ifcopenshell' para transformar este mapa 2D num esqueleto 3D que abrirá direto no Revit!")
 
     else:
-        st.warning("⚠️ O DXF parece ser diferente do padrão ou os textos não foram alinhados. Esta é a leitura bruta do que encontrei dentro do ficheiro:")
-        st.dataframe(df)
+        st.warning("⚠️ **DIAGNÓSTICO:** O Radar não conseguiu alinhar as colunas com os Pilares. Isto acontece quando o Eberick exporta a tabela como 'Linhas Explodidas' isoladas ou quando a formatação é muito distante.")
+        st.write("🛠️ **Dica rápida:** Antes de salvar em `.dxf` no CAD, selecione a tabela e escreva o comando `EXPLODE` (X).")
+        st.write("Abaixo está a Tabela Bruta (Exatamente o que o Python viu dentro do seu DXF). Se as palavras X, Y, e as Cargas não estiverem aqui, é porque estão trancadas dentro de um Bloco fechado do CAD.")
+        st.dataframe(df, use_container_width=True)
 
 else:
     st.info("👈 Por favor, faça o upload da Planta de Cargas (.DXF do Eberick ou Tabela Excel) na barra lateral.")
