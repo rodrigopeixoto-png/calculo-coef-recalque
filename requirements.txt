@@ -8,3 +8,4 @@ reportlab
 pdfplumber
 plotly
 openpyxl
+ezdxf
