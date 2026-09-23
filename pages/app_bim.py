@@ -16,7 +16,7 @@ except ImportError:
 st.set_page_config(page_title="Gestor BIM e Orçamento - Fundações", page_icon="🏢", layout="wide")
 
 # -----------------------------------------------------------------------------
-# DICIONÁRIO GEOTÉCNICO (CÉREBRO IMPORTADO DO APP.PY)
+# DICIONÁRIO GEOTÉCNICO (CÉREBRO IMPORTADO)
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
     "Aterro":                {"aoki_K": 0,    "aoki_alpha": 0.000},
@@ -49,9 +49,6 @@ def get_teix_alpha(s):
     if "silte" in s: return 200
     return 150
 
-# -----------------------------------------------------------------------------
-# FUNÇÃO DE CÁLCULO DE CAPACIDADE DE CARGA (POR DIÂMETRO)
-# -----------------------------------------------------------------------------
 def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio="Média dos Métodos"):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
@@ -61,8 +58,6 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     
     Area_c = (np.pi * diametro_m**2) / 4 
     Perimetro = np.pi * diametro_m 
-    
-    # Assumindo estaca Hélice Contínua como padrão BIM
     f1, f2 = 2.0, 4.0 
     alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0 
 
@@ -99,13 +94,33 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     elif criterio == "Apenas Décourt-Quaresma": col_adotada = "Rc DQ"
     else: col_adotada = "Rc Teix"
 
-    # Encontra a primeira profundidade onde a Resistência supera a Carga
     df_suficiente = df_spt[df_spt[col_adotada] >= carga_alvo_kn]
     
     if len(df_suficiente) > 0:
         return df_suficiente.iloc[0]["Profundidade (m)"]
     else:
-        return df_spt["Profundidade (m)"].max() # Retorna a máx do furo se não for suficiente
+        return df_spt["Profundidade (m)"].max() 
+
+# -----------------------------------------------------------------------------
+# CÁLCULO DE ARMADURA DETALHADA (IMPORTADO DO APP.PY)
+# -----------------------------------------------------------------------------
+def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
+    Area_c = (np.pi * diametro_m**2) / 4
+    area_barra = (np.pi * (bitola_long / 1000)**2) / 4  
+    
+    # Quantidade de barras baseada na taxa mínima
+    n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
+    As_total = n_barras * area_barra
+    
+    # Comprimento da Gaiola
+    L_arm = prof_m if l_manual is None else min(l_manual, prof_m)
+    
+    # Pesos
+    peso_long = As_total * L_arm * 7850
+    qtd_estribos = int(L_arm / (espacamento / 100))
+    peso_estribo = qtd_estribos * (np.pi * (diametro_m - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
+    
+    return peso_long + peso_estribo, n_barras, L_arm
 
 # -----------------------------------------------------------------------------
 # FUNÇÃO: RADAR GEOMÉTRICO (DXF)
@@ -192,12 +207,10 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# INTERFACE PRINCIPAL
+# INTERFACE PRINCIPAL E BARRA LATERAL
 # -----------------------------------------------------------------------------
 st.title("🏢 Gestor BIM & Orçamento de Fundações")
-st.caption("Dimensionamento automático de estacas cruzando Planta de Cargas (DXF) e Perfil do Terreno (.utea)")
-
-col_side1, col_side2 = st.sidebar.columns(2)
+st.caption("Dimensionamento automático de estacas e armaduras cruzando DXF e Terreno (.utea)")
 
 st.sidebar.header("1️⃣ Importar Terreno (.utea)")
 st.sidebar.info("Upload do projeto criado no Módulo Geotécnico.")
@@ -215,7 +228,7 @@ if arquivo_utea is not None:
         st.sidebar.success(f"Terreno lido! ({len(dados_terreno)} furos encontrados)")
         
         furo_selecionado = st.sidebar.selectbox("Furo Base para Cálculo Global:", list(dados_terreno.keys()))
-        criterio_selecionado = st.sidebar.selectbox("Critério Geotécnico:", ["Média dos Métodos", "Menor Valor (Mais Conservador)", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma"])
+        criterio_selecionado = st.sidebar.selectbox("Critério Geotécnico:", ["Média dos Métodos", "Menor Valor (Mais Conservador)", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"])
     except Exception as e:
         st.sidebar.error("Erro ao ler o ficheiro de terreno.")
 
@@ -224,8 +237,15 @@ st.sidebar.header("2️⃣ Importar Planta de Cargas")
 arquivo_upload = st.sidebar.file_uploader("Planta do Eberick (.dxf, .xlsx)", type=["dxf", "xlsx", "csv"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Configuração Estrutural")
-taxa_aco_estimada = st.sidebar.number_input("Taxa de Aço Média (kg/m³ de betão)", value=85.0, step=5.0)
+# --- NOVOS CONTROLES ESTRUTURAIS IMPORTADOS DO APP.PY ---
+st.sidebar.header("3️⃣ Configuração Estrutural (Armadura)")
+taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
+bitola = st.sidebar.selectbox("Bitola Longitudinal (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
+bitola_estribo = st.sidebar.selectbox("Bitola do Estribo (mm)", [5.0, 6.3, 8.0, 10.0], index=1)
+espacamento_estribo = st.sidebar.number_input("Espaçamento dos Estribos (cm)", min_value=5.0, max_value=30.0, value=15.0, step=2.5)
+
+gaiola_tipo = st.sidebar.selectbox("Comprimento da Gaiola", ["Total (Toda a estaca)", "Parcial (Manual)"])
+L_armadura_manual = st.sidebar.number_input("Comprimento Manual (m)", value=6.0, step=0.5) if gaiola_tipo == "Parcial (Manual)" else None
 
 if 'df_projeto' not in st.session_state:
     st.session_state.df_projeto = None
@@ -263,22 +283,40 @@ if st.session_state.df_projeto is not None:
         
         df["Carga_por_Estaca_kN"] = (df["Carga_Max_tf"] * 10) / df["ne"]
 
-        # --- A GRANDE INTEGRAÇÃO GEOTÉCNICA ---
+        # --- A GRANDE INTEGRAÇÃO GEOTÉCNICA E ESTRUTURAL ---
+        profundidades = []
+        pesos_aco = []
+        detalhes_armadura = []
+
         if furo_selecionado and furo_selecionado in dados_terreno:
             df_spt_atual = dados_terreno[furo_selecionado]
-            profundidades = []
-            
-            for index, row in df.iterrows():
-                prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado)
-                profundidades.append(prof)
-                
-            df["Profundidade_m"] = profundidades
-            st.success(f"✅ O Software cruzou as cargas com o {furo_selecionado} e dimensionou as profundidades de todas as estacas com sucesso!")
+            st.success(f"✅ O Software cruzou as cargas com o {furo_selecionado} e dimensionou as profundidades e armaduras individualmente!")
         else:
+            df_spt_atual = None
             st.warning("⚠️ Nenhum Terreno (.utea) carregado. Assumindo profundidade teórica de 12m para orçamento.")
-            df["Profundidade_m"] = 12.0
 
-        # --- ORÇAMENTO REAL ---
+        for index, row in df.iterrows():
+            # 1. Determinar Profundidade
+            if df_spt_atual is not None:
+                prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado)
+            else:
+                prof = 12.0
+            profundidades.append(prof)
+            
+            # 2. Determinar Peso e Detalhe do Aço (Gaiola Exata)
+            peso_estaca, num_barras, comp_gaiola = calcular_peso_aco_estaca(
+                row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual
+            )
+            
+            # Multiplica pelo número de estacas do bloco
+            pesos_aco.append(peso_estaca * row["ne"])
+            detalhes_armadura.append(f"{num_barras} Φ {bitola} (L={comp_gaiola:.1f}m)")
+                
+        df["Profundidade_m"] = profundidades
+        df["Peso_Aco_kg"] = pesos_aco
+        df["Armadura_Principal"] = detalhes_armadura
+
+        # --- ORÇAMENTO REAL DETALHADO ---
         total_blocos = len(df)
         total_estacas = df["ne"].sum()
         df["Metros_Perfurados"] = df["Profundidade_m"] * df["ne"]
@@ -286,14 +324,14 @@ if st.session_state.df_projeto is not None:
         
         df["Vol_Concreto_m3"] = (np.pi * (df["Diametro_m"]**2) / 4) * df["Metros_Perfurados"]
         volume_concreto_total = df["Vol_Concreto_m3"].sum()
-        peso_aco_total = volume_concreto_total * taxa_aco_estimada
+        peso_aco_total = df["Peso_Aco_kg"].sum()
 
         st.subheader("💰 Resumo Executivo da Fundação")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Pilares / Blocos", f"{total_blocos} un")
         c2.metric("Total Perfurado", f"{total_metros:.1f} m", f"Em {total_estacas:.0f} estacas")
         c3.metric("Volume de Betão/Concreto", f"{volume_concreto_total:.1f} m³")
-        c4.metric("Aço Estimado (Total)", f"{peso_aco_total:,.1f} kg")
+        c4.metric("Aço Detalhado (Total)", f"{peso_aco_total:,.1f} kg")
 
         st.markdown("---")
 
@@ -312,10 +350,14 @@ if st.session_state.df_projeto is not None:
                 y="Y_m", 
                 text="Pilar",
                 size="Tamanho_Visual", 
-                color="Profundidade_m", # AGORA O MAPA É COLORIDO PELA PROFUNDIDADE!
-                hover_data={"Carga_Max_tf": True, "ne": True, "Diametro_m": True, "Carga_por_Estaca_kN": True, "Profundidade_m": True, "X_m": False, "Y_m": False, "Tamanho_Visual": False},
-                labels={"Carga_Max_tf": "Carga Total (tf)", "ne": "Estacas", "Profundidade_m": "Prof. (m)", "Carga_por_Estaca_kN": "Carga/Estaca (kN)"},
-                color_continuous_scale=px.colors.diverging.RdYlBu_r # Escala de calor perfeita
+                color="Profundidade_m", 
+                hover_data={
+                    "Carga_Max_tf": True, "ne": True, "Diametro_m": True, 
+                    "Profundidade_m": True, "Armadura_Principal": True,
+                    "X_m": False, "Y_m": False, "Tamanho_Visual": False
+                },
+                labels={"Carga_Max_tf": "Carga Total (tf)", "ne": "Estacas", "Profundidade_m": "Prof. (m)", "Armadura_Principal": "Armadura"},
+                color_continuous_scale=px.colors.diverging.RdYlBu_r 
             )
             
             fig.update_traces(textposition='top center', marker=dict(line=dict(width=1, color='DarkSlateGrey')))
@@ -330,8 +372,8 @@ if st.session_state.df_projeto is not None:
             st.error(f"Erro ao gerar a visualização gráfica: {e}")
 
         with st.expander("👁️ Ver Memória de Cálculo Individual (Pilar a Pilar)", expanded=False):
-            df_mostrar = df[["Pilar", "Carga_Max_tf", "ne", "Diametro_m", "Carga_por_Estaca_kN", "Profundidade_m", "Vol_Concreto_m3"]].copy()
-            df_mostrar.columns = ["Pilar", "Carga Total (tf)", "Nº Estacas", "Diâmetro (m)", "Esforço p/ Estaca (kN)", "Prof. Calculada (m)", "Concreto (m³)"]
+            df_mostrar = df[["Pilar", "Carga_Max_tf", "ne", "Diametro_m", "Carga_por_Estaca_kN", "Profundidade_m", "Armadura_Principal", "Peso_Aco_kg", "Vol_Concreto_m3"]].copy()
+            df_mostrar.columns = ["Pilar", "Carga Total (tf)", "Nº Estacas", "Diâmetro (m)", "Esforço p/ Estaca (kN)", "Prof. Calculada (m)", "Detalhe da Gaiola", "Aço Total do Bloco (kg)", "Concreto do Bloco (m³)"]
             st.dataframe(df_mostrar, use_container_width=True)
 
     else:
