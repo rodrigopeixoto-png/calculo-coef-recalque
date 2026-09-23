@@ -21,27 +21,22 @@ st.caption("Leitura Nativa de CAD (.DXF) com Radar Geométrico e Importação de
 # FUNÇÃO: RADAR GEOMÉTRICO BLINDADO PARA TABELAS DXF (PADRÃO EBERICK)
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
-    # 1. Cria um arquivo temporário físico para evitar erros de leitura Binária (Invalid binary data)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         tmp.write(dxf_bytes)
         tmp_path = tmp.name
         
     try:
-        # A função readfile deteta automaticamente se o DXF é ASCII ou Binário
         doc = ezdxf.readfile(tmp_path)
     finally:
-        # Limpa o arquivo temporário independentemente de sucesso ou erro
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
     
     textos_brutos = []
     
-    # 2. Função interna para limpar textos sujos do AutoCAD
     def limpar_texto(txt):
         t = re.sub(r'\\[A-Za-z0-9~]+;', '', str(txt)).strip()
         return t.replace('{', '').replace('}', '')
 
-    # 3. Varrer Modelspace (Textos soltos e Textos dentro de Blocos)
     for e in doc.modelspace():
         if e.dxftype() in ('TEXT', 'MTEXT'):
             t = e.dxf.text if e.dxftype() == 'TEXT' else e.text
@@ -50,19 +45,16 @@ def extrair_tabela_do_dxf(dxf_bytes):
                 textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
                 
         elif e.dxftype() == 'INSERT':
-            # Ler atributos de bloco
             for attrib in e.attribs:
                 t_limpo = limpar_texto(attrib.dxf.text)
                 if t_limpo: 
                     textos_brutos.append({'Texto': t_limpo, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
-            # Ler entidades dentro da definição do bloco
             block = doc.blocks.get(e.dxf.name)
             if block:
                 for entity in block.query('TEXT MTEXT'):
                     t = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
                     t_limpo = limpar_texto(t)
                     if t_limpo:
-                        # Soma a coordenada local do bloco com a global da inserção
                         textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
 
     if not textos_brutos: 
@@ -70,7 +62,6 @@ def extrair_tabela_do_dxf(dxf_bytes):
 
     df_raw = pd.DataFrame(textos_brutos)
     
-    # 4. Encontrar X dos cabeçalhos principais (Mapeamento Flexível)
     headers_x = {'x': None, 'y': None, 'carga': None, 'ne': None, 'estaca': None}
     
     for index, row in df_raw.iterrows():
@@ -81,28 +72,23 @@ def extrair_tabela_do_dxf(dxf_bytes):
         elif val == 'ne': headers_x['ne'] = row['X']
         elif val == 'estaca': headers_x['estaca'] = row['X']
 
-    # Resgate caso a palavra 'Carga Máx' esteja partida
     if headers_x['carga'] is None:
         for index, row in df_raw.iterrows():
             if 'carga' in str(row['Texto']).lower(): headers_x['carga'] = row['X']
 
-    # 5. Caçar os Pilares (Ex: P1, P20)
     pilares = df_raw[df_raw['Texto'].str.match(r'^P\s*\d+$', case=False)]
     
     linhas_dados = []
-    # 6. Batalha Naval: Cruzar o Y do Pilar com o X do Cabeçalho
     for _, p in pilares.iterrows():
         y_ref = p['Y']
-        # Pega todos os textos que estão na mesma linha horizontal (Tolerância de 35 unidades)
         linha_textos = df_raw[abs(df_raw['Y'] - y_ref) <= 35.0].copy()
         
         def pega_valor(chave):
             x_alvo = headers_x[chave]
             if x_alvo is None or len(linha_textos) == 0: return None
-            # Encontra o texto mais próximo da coluna visual
             linha_textos['Dist'] = abs(linha_textos['X'] - x_alvo)
             texto_perto = linha_textos.loc[linha_textos['Dist'].idxmin()]
-            if texto_perto['Dist'] < 60.0: # Margem de erro de alinhamento
+            if texto_perto['Dist'] < 60.0: 
                 return str(texto_perto['Texto'])
             return None
             
@@ -117,14 +103,12 @@ def extrair_tabela_do_dxf(dxf_bytes):
         
     df_final = pd.DataFrame(linhas_dados)
     
-    # 7. Limpeza Final
     for col in ["X_cm", "Y_cm", "Carga_Max_tf", "ne"]:
         if col in df_final.columns:
             df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace(',', '.').str.extract(r'([-+]?\d*\.?\d+)')[0], errors='coerce')
             
     df_final = df_final.dropna(subset=['Pilar'])
     
-    # Valida se a missão foi bem sucedida
     if len(df_final) > 0 and headers_x['x'] is not None and headers_x['y'] is not None:
         return df_final, df_raw
         
@@ -148,9 +132,9 @@ if arquivo_upload is not None:
             try:
                 df_extraido, df_raw_debug = extrair_tabela_do_dxf(arquivo_upload.getvalue())
                 
-                if df_extraido is not None and "Carga_Max_tf" in df_extraido.columns:
+                if df_extraido is not None and "X_cm" in df_extraido.columns:
                     st.session_state.df_projeto = df_extraido
-                    st.sidebar.success(f"Tabela CAD lida na perfeição! ({len(df_extraido)} blocos extraídos)")
+                    st.sidebar.success(f"Tabela CAD lida com sucesso! ({len(df_extraido)} blocos extraídos)")
                 else:
                     st.sidebar.warning("⚠️ O radar não encontrou os cabeçalhos padrão. Exibindo os textos brutos na tela principal para investigação.")
                     st.session_state.df_projeto = df_raw_debug
@@ -176,7 +160,7 @@ taxa_aco_estimada = st.sidebar.number_input("Taxa de Aço Média (kg/m³ de bet�
 if st.session_state.df_projeto is not None:
     df = st.session_state.df_projeto.copy()
     
-    # Verifica se a tabela já passou pelo filtro inteligente do DXF/Excel
+    # Verifica se a tabela já passou pelo filtro inteligente do DXF/Excel (tem a coluna Pilar e X_cm)
     if "Pilar" in df.columns and "X_cm" in df.columns:
         
         # 1. Tratar os dados para o Orçamento e Desenho
@@ -192,8 +176,12 @@ if st.session_state.df_projeto is not None:
         else:
             df["Diametro_m"] = 0.50
 
+        # Garantir que as colunas críticas existem e não têm valores nulos (NaN) para não quebrar a matemática
         if "ne" not in df.columns: df["ne"] = 1
-        if "Carga_Max_tf" not in df.columns: df["Carga_Max_tf"] = 50.0
+        df["ne"] = pd.to_numeric(df["ne"], errors='coerce').fillna(1)
+        
+        if "Carga_Max_tf" not in df.columns: df["Carga_Max_tf"] = 0.0
+        df["Carga_Max_tf"] = pd.to_numeric(df["Carga_Max_tf"], errors='coerce').fillna(0.0)
 
         # -------------------------------------------------------------------------
         # 2. ORÇAMENTO GERAL
@@ -218,30 +206,41 @@ if st.session_state.df_projeto is not None:
         # 3. PLANTA DE LOCAÇÃO INTERATIVA (BIM 2D)
         # -------------------------------------------------------------------------
         st.subheader("🗺️ Planta de Locação e Mapa de Cargas")
-        st.info("Passe o rato sobre os blocos para ver as informações extraídas cirurgicamente do seu arquivo DXF.")
+        st.info("Passe o rato sobre os blocos para ver as informações extraídas cirurgicamente do seu arquivo.")
         
-        fig = px.scatter(
-            df, 
-            x="X_m", 
-            y="Y_m", 
-            text="Pilar",
-            size="Carga_Max_tf", 
-            color="ne",          
-            hover_data={"Carga_Max_tf": True, "ne": True, "Estaca": True, "Diametro_m": True, "X_m": False, "Y_m": False},
-            labels={"Carga_Max_tf": "Carga (tf)", "ne": "Nº de Estacas"},
-            color_continuous_scale=px.colors.sequential.Viridis
-        )
+        # Criação da "Rede de Segurança" para o gráfico do Plotly não encravar
+        # Garante que o tamanho da bolha visual nunca é negativo nem zero
+        df["Tamanho_Visual"] = df["Carga_Max_tf"].abs()
+        df.loc[df["Tamanho_Visual"] < 5, "Tamanho_Visual"] = 5 # Tamanho mínimo de segurança para desenhar
         
-        fig.update_traces(textposition='top center', marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-        fig.update_layout(
-            height=650, 
-            plot_bgcolor='rgba(240, 240, 240, 0.8)',
-            title_text="Visualização Top-Down do Projeto (Coordenadas reais do Eberick)",
-            xaxis=dict(scaleanchor="y", scaleratio=1), 
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # Garante que as colunas extraídas são convertidas para string/listas simples no hover
+        if "Estaca" not in df.columns: df["Estaca"] = "N/A"
 
-        with st.expander("👁️ Tabela Oficial Extraída do Arquivo DXF", expanded=False):
+        try:
+            fig = px.scatter(
+                df, 
+                x="X_m", 
+                y="Y_m", 
+                text="Pilar",
+                size="Tamanho_Visual", # Coluna segura que criámos acima
+                color="ne",          
+                hover_data=["Carga_Max_tf", "ne", "Estaca", "Diametro_m"], 
+                labels={"Carga_Max_tf": "Carga (tf)", "ne": "Nº de Estacas"},
+                color_continuous_scale=px.colors.sequential.Viridis
+            )
+            
+            fig.update_traces(textposition='top center', marker=dict(line=dict(width=1, color='DarkSlateGrey')))
+            fig.update_layout(
+                height=650, 
+                plot_bgcolor='rgba(240, 240, 240, 0.8)',
+                title_text="Visualização Top-Down do Projeto",
+                xaxis=dict(scaleanchor="y", scaleratio=1), 
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Erro ao gerar a visualização gráfica: {e}")
+
+        with st.expander("👁️ Tabela Oficial Extraída do Arquivo", expanded=False):
             st.dataframe(df, use_container_width=True)
             
         st.markdown("---")
@@ -250,9 +249,8 @@ if st.session_state.df_projeto is not None:
             st.success("Temos as Coordenadas, os Diâmetros, o número de estacas e as Cargas extraídas do CAD perfeitamente. O próximo passo de desenvolvimento será importar a biblioteca 'ifcopenshell' para transformar este mapa 2D num esqueleto 3D que abrirá direto no Revit!")
 
     else:
-        st.warning("⚠️ **DIAGNÓSTICO:** O Radar não conseguiu alinhar as colunas com os Pilares. Isto acontece quando o Eberick exporta a tabela como 'Linhas Explodidas' isoladas ou quando a formatação é muito distante.")
-        st.write("🛠️ **Dica rápida:** Antes de salvar em `.dxf` no CAD, selecione a tabela e escreva o comando `EXPLODE` (X).")
-        st.write("Abaixo está a Tabela Bruta (Exatamente o que o Python viu dentro do seu DXF). Se as palavras X, Y, e as Cargas não estiverem aqui, é porque estão trancadas dentro de um Bloco fechado do CAD.")
+        st.warning("⚠️ **DIAGNÓSTICO:** O Radar não conseguiu alinhar as colunas com os Pilares de forma perfeita.")
+        st.write("Abaixo está a Tabela Bruta (Exatamente o que o Python viu dentro do seu DXF).")
         st.dataframe(df, use_container_width=True)
 
 else:
