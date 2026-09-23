@@ -11,12 +11,20 @@ import json
 try:
     import ezdxf
 except ImportError:
-    st.error("A biblioteca 'ezdxf' não está instalada. Adicione 'ezdxf' ao seu ficheiro requirements.txt e faça o reboot!")
+    st.error("A biblioteca 'ezdxf' não está instalada. Adicione 'ezdxf' ao requirements.txt e faça reboot!")
+
+# Tentar importar a biblioteca BIM
+try:
+    import ifcopenshell
+    from ifcopenshell.api import run
+    HAS_BIM = True
+except ImportError:
+    HAS_BIM = False
 
 st.set_page_config(page_title="Gestor BIM e Orçamento - Fundações", page_icon="🏢", layout="wide")
 
 # -----------------------------------------------------------------------------
-# DICIONÁRIO GEOTÉCNICO (CÉREBRO IMPORTADO)
+# DICIONÁRIO GEOTÉCNICO
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
     "Aterro":                {"aoki_K": 0,    "aoki_alpha": 0.000},
@@ -37,19 +45,11 @@ PARAMETROS_SOLO = {
     "Argila Siltosa":        {"aoki_K": 220,  "aoki_alpha": 0.040}
 }
 
-def get_dq_c(s):
-    s = str(s).lower()
-    if "areia" in s: return 400
-    if "silte" in s: return 200
-    return 120
-    
-def get_teix_alpha(s):
-    s = str(s).lower()
-    if "areia" in s: return 250
-    if "silte" in s: return 200
-    return 150
+def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
+def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio="Média dos Métodos"):
+# Atualizado com o Limitador Físico (Prof. Mínima)
+def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio="Média dos Métodos", prof_minima=6.0):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -58,64 +58,42 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     
     Area_c = (np.pi * diametro_m**2) / 4 
     Perimetro = np.pi * diametro_m 
-    f1, f2 = 2.0, 4.0 
-    alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0 
+    f1, f2, alfa_dq, beta_dq, beta_t = 2.0, 4.0, 0.3, 1.0, 6.0 
 
     def proc_solo_aoki(row):
         solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
-        n = row["N_corr"]
-        rl = (solo["aoki_alpha"] * solo["aoki_K"] * n) / f2
-        rp = (solo["aoki_K"] * n) / f1 * Area_c
+        rl = (solo["aoki_alpha"] * solo["aoki_K"] * row["N_corr"]) / f2
+        rp = (solo["aoki_K"] * row["N_corr"]) / f1 * Area_c
         return pd.Series([rl * Perimetro * 1.0, rp])
 
     df_spt[["delta_Rl_aoki", "Rp_aoki"]] = df_spt.apply(proc_solo_aoki, axis=1)
-    df_spt["Rl_Aoki_Acum"] = df_spt["delta_Rl_aoki"].cumsum()
-    df_spt["Rc Aoki"] = (df_spt["Rp_aoki"] + df_spt["Rl_Aoki_Acum"]) / 2.0
+    df_spt["Rc Aoki"] = (df_spt["Rp_aoki"] + df_spt["delta_Rl_aoki"].cumsum()) / 2.0
     
     df_spt["N_dq"] = df_spt["N_corr"].apply(lambda x: max(3, min(x, 50)))
     df_spt["C_dq"] = df_spt["Tipo de Solo"].apply(get_dq_c)
-    df_spt["delta_Rl_dq"] = beta_dq * 10 * ((df_spt["N_dq"] / 3) + 1) * Perimetro * 1.0
-    df_spt["Rl_DQ_Acum"] = df_spt["delta_Rl_dq"].cumsum()
-    df_spt["Rp_dq"] = alfa_dq * df_spt["C_dq"] * df_spt["N_corr"] * Area_c
-    df_spt["Rc DQ"] = (df_spt["Rp_dq"] + df_spt["Rl_DQ_Acum"]) / 2.0
+    df_spt["Rc DQ"] = ((alfa_dq * df_spt["C_dq"] * df_spt["N_corr"] * Area_c) + (beta_dq * 10 * ((df_spt["N_dq"] / 3) + 1) * Perimetro).cumsum()) / 2.0
     
     df_spt["alpha_teix"] = df_spt["Tipo de Solo"].apply(get_teix_alpha)
-    df_spt["delta_Rl_t"] = beta_t * df_spt["N_corr"] * Perimetro * 1.0
-    df_spt["Rl_T_Acum"] = df_spt["delta_Rl_t"].cumsum()
-    df_spt["Rp_t"] = df_spt["alpha_teix"] * df_spt["N_corr"] * Area_c
-    df_spt["Rc Teix"] = (df_spt["Rp_t"] + df_spt["Rl_T_Acum"]) / 2.0
+    df_spt["Rc Teix"] = ((df_spt["alpha_teix"] * df_spt["N_corr"] * Area_c) + (beta_t * df_spt["N_corr"] * Perimetro).cumsum()) / 2.0
 
     df_spt["Rc Média"] = (df_spt["Rc Aoki"] + df_spt["Rc DQ"] + df_spt["Rc Teix"]) / 3.0
     df_spt["Rc Menor"] = df_spt[["Rc Aoki", "Rc DQ", "Rc Teix"]].min(axis=1)
 
-    if criterio == "Média dos Métodos": col_adotada = "Rc Média"
-    elif criterio == "Menor Valor (Mais Conservador)": col_adotada = "Rc Menor"
-    elif criterio == "Apenas Aoki-Velloso": col_adotada = "Rc Aoki"
-    elif criterio == "Apenas Décourt-Quaresma": col_adotada = "Rc DQ"
-    else: col_adotada = "Rc Teix"
+    col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor (Mais Conservador)" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
 
     df_suficiente = df_spt[df_spt[col_adotada] >= carga_alvo_kn]
     
-    if len(df_suficiente) > 0:
-        return df_suficiente.iloc[0]["Profundidade (m)"]
-    else:
-        return df_spt["Profundidade (m)"].max() 
+    prof_calc = df_suficiente.iloc[0]["Profundidade (m)"] if len(df_suficiente) > 0 else df_spt["Profundidade (m)"].max()
+    return max(prof_calc, prof_minima) # AQUI ESTÁ O SEU LIMITADOR!
 
-# -----------------------------------------------------------------------------
-# CÁLCULO DE ARMADURA DETALHADA (IMPORTADO DO APP.PY)
-# -----------------------------------------------------------------------------
 def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
     Area_c = (np.pi * diametro_m**2) / 4
     area_barra = (np.pi * (bitola_long / 1000)**2) / 4  
-    
-    # Quantidade de barras baseada na taxa mínima
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     As_total = n_barras * area_barra
     
-    # Comprimento da Gaiola
-    L_arm = prof_m if l_manual is None else min(l_manual, prof_m)
+    L_arm = prof_m if l_manual is None else min(l_manual, prof_m) # O Limitador físico da gaiola
     
-    # Pesos
     peso_long = As_total * L_arm * 7850
     qtd_estribos = int(L_arm / (espacamento / 100))
     peso_estribo = qtd_estribos * (np.pi * (diametro_m - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
@@ -123,36 +101,33 @@ def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bit
     return peso_long + peso_estribo, n_barras, L_arm
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO: RADAR GEOMÉTRICO (DXF)
+# RADAR GEOMÉTRICO (DXF)
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         tmp.write(dxf_bytes)
         tmp_path = tmp.name
-    try:
-        doc = ezdxf.readfile(tmp_path)
+    try: doc = ezdxf.readfile(tmp_path)
     finally:
         if os.path.exists(tmp_path): os.remove(tmp_path)
     
     textos_brutos = []
     def limpar_texto(txt):
-        t = str(txt).replace('\\P', ' ').replace('\\p', ' ')
-        t = re.sub(r'\\[A-Za-z0-9~]+;', '', t).strip()
-        return t.replace('{', '').replace('}', '')
+        return re.sub(r'\\[A-Za-z0-9~]+;', '', str(txt).replace('\\P', ' ').replace('\\p', ' ')).strip().replace('{', '').replace('}', '')
 
     for e in doc.modelspace():
         if e.dxftype() in ('TEXT', 'MTEXT'):
-            t_limpo = limpar_texto(e.dxf.text if e.dxftype() == 'TEXT' else e.text)
-            if t_limpo: textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
+            t = limpar_texto(e.dxf.text if e.dxftype() == 'TEXT' else e.text)
+            if t: textos_brutos.append({'Texto': t, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
         elif e.dxftype() == 'INSERT':
             for attrib in e.attribs:
-                t_limpo = limpar_texto(attrib.dxf.text)
-                if t_limpo: textos_brutos.append({'Texto': t_limpo, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
+                t = limpar_texto(attrib.dxf.text)
+                if t: textos_brutos.append({'Texto': t, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
             block = doc.blocks.get(e.dxf.name)
             if block:
                 for entity in block.query('TEXT MTEXT'):
-                    t_limpo = limpar_texto(entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text)
-                    if t_limpo: textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
+                    t = limpar_texto(entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text)
+                    if t: textos_brutos.append({'Texto': t, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
 
     if not textos_brutos: return None, pd.DataFrame()
     df_raw = pd.DataFrame(textos_brutos)
@@ -174,11 +149,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
     if len(pilares) == 0: return None, df_raw
 
     y_vals = sorted(pilares['Y'].unique(), reverse=True)
-    if len(y_vals) > 1:
-        espacamentos = [abs(y_vals[i] - y_vals[i+1]) for i in range(len(y_vals)-1)]
-        tolerancia_y = np.median(espacamentos) * 0.40 
-    else:
-        tolerancia_y = 15.0 
+    tolerancia_y = np.median([abs(y_vals[i] - y_vals[i+1]) for i in range(len(y_vals)-1)]) * 0.40 if len(y_vals) > 1 else 15.0
     
     linhas_dados = []
     for _, p in pilares.iterrows():
@@ -207,13 +178,89 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
+# NOVO: MOTOR DE EXPORTAÇÃO BIM (.IFC)
+# -----------------------------------------------------------------------------
+def gerar_modelo_ifc(df_projeto):
+    model = ifcopenshell.file()
+    
+    # Criar Projeto e Contextos
+    project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
+    run("unit.assign_standard_units", model)
+    context = run("context.add_context", model, context_type="Model")
+    body = run("context.add_context", model, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context)
+    
+    site = run("root.create_entity", model, ifc_class="IfcSite", name="Terreno")
+    run("aggregate.assign_object", model, relating_object=project, related_object=site)
+    building = run("root.create_entity", model, ifc_class="IfcBuilding", name="Fundações Profundas")
+    run("aggregate.assign_object", model, relating_object=site, related_object=building)
+    
+    for idx, row in df_projeto.iterrows():
+        diam = row.get('Diametro_m', 0.5)
+        prof = row.get('Profundidade_m', 12.0)
+        ne = int(row.get('ne', 1))
+        x_base = row.get('X_m', 0)
+        y_base = row.get('Y_m', 0)
+        
+        # Desenha cilindros individuais para cada estaca do bloco
+        for i in range(ne):
+            if ne == 1:
+                dx, dy = 0.0, 0.0
+            else:
+                raio_distribuicao = 1.5 * diam # Afastamento estético das estacas no bloco
+                angle = i * (2 * np.pi / ne)
+                dx = raio_distribuicao * np.cos(angle)
+                dy = raio_distribuicao * np.sin(angle)
+            
+            nome_estaca = f"Estaca_{row['Pilar']}" if ne == 1 else f"Estaca_{row['Pilar']}_{i+1}"
+            pile = run("root.create_entity", model, ifc_class="IfcPile", name=nome_estaca)
+            run("spatial.assign_container", model, relating_structure=building, related_element=pile)
+            
+            # Geometria (Perfil Circular)
+            pt = model.createIfcCartesianPoint((0.0, 0.0))
+            dir2d = model.createIfcDirection((1.0, 0.0))
+            axis2d = model.createIfcAxis2Placement2D(pt, dir2d)
+            profile = model.createIfcCircleProfileDef("AREA", None, axis2d, float(diam / 2.0))
+            
+            # Extrusão (Desce a partir do Z=0)
+            pt_3d = model.createIfcCartesianPoint((0.0, 0.0, 0.0))
+            dir_z = model.createIfcDirection((0.0, 0.0, 1.0))
+            dir_x = model.createIfcDirection((1.0, 0.0, 0.0))
+            placement_3d = model.createIfcAxis2Placement3D(pt_3d, dir_z, dir_x)
+            
+            solid = model.createIfcExtrudedAreaSolid(profile, placement_3d, dir_z, float(prof))
+            shape_rep = model.createIfcShapeRepresentation(context, "Body", "SweptSolid", [solid])
+            prod_def = model.createIfcProductDefinitionShape(None, None, [shape_rep])
+            pile.Representation = prod_def
+            
+            # Posicionamento exato no Mundo Real (A extrusão é para cima, logo inserimos no fundo do furo)
+            pt_loc = model.createIfcCartesianPoint((float(x_base + dx), float(y_base + dy), float(-prof)))
+            loc_placement = model.createIfcAxis2Placement3D(pt_loc, dir_z, dir_x)
+            local_placement = model.createIfcLocalPlacement(None, loc_placement)
+            pile.ObjectPlacement = local_placement
+            
+            # Injetar os Metadados (O I do BIM!)
+            try:
+                pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
+                run("pset.edit_pset", model, pset=pset, properties={
+                    "Reference": str(row['Pilar']),
+                    "LoadBearing": True,
+                    "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
+                    "Volume_Betao_m3": float(row.get('Vol_Concreto_m3', 0) / ne),
+                    "Armadura": str(row.get('Armadura_Principal', 'N/A'))
+                })
+            except Exception:
+                pass 
+                
+    return model.to_string()
+
+
+# -----------------------------------------------------------------------------
 # INTERFACE PRINCIPAL E BARRA LATERAL
 # -----------------------------------------------------------------------------
 st.title("🏢 Gestor BIM & Orçamento de Fundações")
-st.caption("Dimensionamento automático de estacas e armaduras cruzando DXF e Terreno (.utea)")
+st.caption("Dimensionamento automático cruzando CAD, Terreno e Exportação IFC Nativa")
 
 st.sidebar.header("1️⃣ Importar Terreno (.utea)")
-st.sidebar.info("Upload do projeto criado no Módulo Geotécnico.")
 arquivo_utea = st.sidebar.file_uploader("Ficheiro .utea", type=["utea", "json"])
 
 dados_terreno = {}
@@ -225,40 +272,37 @@ if arquivo_utea is not None:
         conteudo = json.loads(arquivo_utea.read().decode('utf-8'))
         for nome, info in conteudo.get("furos", {}).items():
             dados_terreno[nome] = pd.DataFrame(info["df"])
-        st.sidebar.success(f"Terreno lido! ({len(dados_terreno)} furos encontrados)")
-        
-        furo_selecionado = st.sidebar.selectbox("Furo Base para Cálculo Global:", list(dados_terreno.keys()))
-        criterio_selecionado = st.sidebar.selectbox("Critério Geotécnico:", ["Média dos Métodos", "Menor Valor (Mais Conservador)", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"])
+        st.sidebar.success(f"Terreno lido! ({len(dados_terreno)} furos)")
+        furo_selecionado = st.sidebar.selectbox("Furo Base:", list(dados_terreno.keys()))
+        criterio_selecionado = st.sidebar.selectbox("Critério:", ["Média dos Métodos", "Menor Valor", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma"])
     except Exception as e:
-        st.sidebar.error("Erro ao ler o ficheiro de terreno.")
+        st.sidebar.error("Erro ao ler terreno.")
 
 st.sidebar.markdown("---")
-st.sidebar.header("2️⃣ Importar Planta de Cargas")
+st.sidebar.header("2️⃣ Importar Planta")
 arquivo_upload = st.sidebar.file_uploader("Planta do Eberick (.dxf, .xlsx)", type=["dxf", "xlsx", "csv"])
 
 st.sidebar.markdown("---")
-# --- NOVOS CONTROLES ESTRUTURAIS IMPORTADOS DO APP.PY ---
-st.sidebar.header("3️⃣ Configuração Estrutural (Armadura)")
+st.sidebar.header("3️⃣ Configuração Estrutural")
+prof_minima_global = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5, help="Mesmo sem carga, a estaca desce até aqui.")
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
-bitola = st.sidebar.selectbox("Bitola Longitudinal (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
-bitola_estribo = st.sidebar.selectbox("Bitola do Estribo (mm)", [5.0, 6.3, 8.0, 10.0], index=1)
-espacamento_estribo = st.sidebar.number_input("Espaçamento dos Estribos (cm)", min_value=5.0, max_value=30.0, value=15.0, step=2.5)
+bitola = st.sidebar.selectbox("Bitola Long. (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
+bitola_estribo = st.sidebar.selectbox("Bitola Estribo (mm)", [5.0, 6.3, 8.0, 10.0], index=1)
+espacamento_estribo = st.sidebar.number_input("Espaçamento Estribos (cm)", min_value=5.0, max_value=30.0, value=15.0, step=2.5)
 
-gaiola_tipo = st.sidebar.selectbox("Comprimento da Gaiola", ["Total (Toda a estaca)", "Parcial (Manual)"])
-L_armadura_manual = st.sidebar.number_input("Comprimento Manual (m)", value=6.0, step=0.5) if gaiola_tipo == "Parcial (Manual)" else None
+gaiola_tipo = st.sidebar.selectbox("Gaiola", ["Total (Toda a estaca)", "Parcial (Manual)"])
+L_armadura_manual = st.sidebar.number_input("Comp. Manual (m)", value=6.0, step=0.5) if gaiola_tipo == "Parcial (Manual)" else None
 
-if 'df_projeto' not in st.session_state:
-    st.session_state.df_projeto = None
+if 'df_projeto' not in st.session_state: st.session_state.df_projeto = None
 
 if arquivo_upload is not None:
     ext = arquivo_upload.name.split('.')[-1].lower()
     if ext == 'dxf':
-        with st.spinner("A varrer o desenho CAD com Radar Auto-Escalável..."):
+        with st.spinner("A varrer DXF..."):
             df_extraido, df_raw_debug = extrair_tabela_do_dxf(arquivo_upload.getvalue())
-            if df_extraido is not None and "X_cm" in df_extraido.columns:
-                st.session_state.df_projeto = df_extraido
+            if df_extraido is not None and "X_cm" in df_extraido.columns: st.session_state.df_projeto = df_extraido
             else:
-                st.sidebar.warning("⚠️ O radar falhou na leitura padronizada.")
+                st.sidebar.warning("⚠️ Falha na leitura padronizada.")
                 st.session_state.df_projeto = df_raw_debug
     elif ext == 'csv': st.session_state.df_projeto = pd.read_csv(arquivo_upload)
     else: st.session_state.df_projeto = pd.read_excel(arquivo_upload)
@@ -280,35 +324,17 @@ if st.session_state.df_projeto is not None:
         df["Diametro_m"] = df["Estaca"].apply(extrair_diametro) if "Estaca" in df.columns else 0.50
         df["ne"] = pd.to_numeric(df.get("ne", 1), errors='coerce').fillna(1)
         df["Carga_Max_tf"] = pd.to_numeric(df.get("Carga_Max_tf", 0.0), errors='coerce').fillna(0.0)
-        
         df["Carga_por_Estaca_kN"] = (df["Carga_Max_tf"] * 10) / df["ne"]
 
-        # --- A GRANDE INTEGRAÇÃO GEOTÉCNICA E ESTRUTURAL ---
-        profundidades = []
-        pesos_aco = []
-        detalhes_armadura = []
+        profundidades, pesos_aco, detalhes_armadura = [], [], []
 
-        if furo_selecionado and furo_selecionado in dados_terreno:
-            df_spt_atual = dados_terreno[furo_selecionado]
-            st.success(f"✅ O Software cruzou as cargas com o {furo_selecionado} e dimensionou as profundidades e armaduras individualmente!")
-        else:
-            df_spt_atual = None
-            st.warning("⚠️ Nenhum Terreno (.utea) carregado. Assumindo profundidade teórica de 12m para orçamento.")
+        df_spt_atual = dados_terreno[furo_selecionado] if furo_selecionado and furo_selecionado in dados_terreno else None
+        if df_spt_atual is None: st.warning("⚠️ Sem Terreno (.utea). Assumindo a Profundidade Mínima para orçamento.")
 
         for index, row in df.iterrows():
-            # 1. Determinar Profundidade
-            if df_spt_atual is not None:
-                prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado)
-            else:
-                prof = 12.0
+            prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global) if df_spt_atual is not None else prof_minima_global
             profundidades.append(prof)
-            
-            # 2. Determinar Peso e Detalhe do Aço (Gaiola Exata)
-            peso_estaca, num_barras, comp_gaiola = calcular_peso_aco_estaca(
-                row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual
-            )
-            
-            # Multiplica pelo número de estacas do bloco
+            peso_estaca, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
             pesos_aco.append(peso_estaca * row["ne"])
             detalhes_armadura.append(f"{num_barras} Φ {bitola} (L={comp_gaiola:.1f}m)")
                 
@@ -316,12 +342,10 @@ if st.session_state.df_projeto is not None:
         df["Peso_Aco_kg"] = pesos_aco
         df["Armadura_Principal"] = detalhes_armadura
 
-        # --- ORÇAMENTO REAL DETALHADO ---
         total_blocos = len(df)
         total_estacas = df["ne"].sum()
         df["Metros_Perfurados"] = df["Profundidade_m"] * df["ne"]
         total_metros = df["Metros_Perfurados"].sum()
-        
         df["Vol_Concreto_m3"] = (np.pi * (df["Diametro_m"]**2) / 4) * df["Metros_Perfurados"]
         volume_concreto_total = df["Vol_Concreto_m3"].sum()
         peso_aco_total = df["Peso_Aco_kg"].sum()
@@ -335,49 +359,49 @@ if st.session_state.df_projeto is not None:
 
         st.markdown("---")
 
-        # --- PLANTA BIM 2D COM MAPA DE CALOR ---
         st.subheader("🗺️ Planta de Locação - Mapa Topográfico (Profundidades)")
-        st.info("Passe o rato sobre os pilares. A cor indica a profundidade que a estaca precisa atingir para suportar a carga no terreno selecionado!")
-        
         df["Tamanho_Visual"] = df["Carga_Max_tf"].abs()
         df.loc[df["Tamanho_Visual"] < 5, "Tamanho_Visual"] = 5 
         if "Estaca" not in df.columns: df["Estaca"] = "N/A"
 
         try:
             fig = px.scatter(
-                df, 
-                x="X_m", 
-                y="Y_m", 
-                text="Pilar",
-                size="Tamanho_Visual", 
-                color="Profundidade_m", 
-                hover_data={
-                    "Carga_Max_tf": True, "ne": True, "Diametro_m": True, 
-                    "Profundidade_m": True, "Armadura_Principal": True,
-                    "X_m": False, "Y_m": False, "Tamanho_Visual": False
-                },
-                labels={"Carga_Max_tf": "Carga Total (tf)", "ne": "Estacas", "Profundidade_m": "Prof. (m)", "Armadura_Principal": "Armadura"},
+                df, x="X_m", y="Y_m", text="Pilar", size="Tamanho_Visual", color="Profundidade_m", 
+                hover_data={"Carga_Max_tf": True, "ne": True, "Diametro_m": True, "Profundidade_m": True, "Armadura_Principal": True, "X_m": False, "Y_m": False, "Tamanho_Visual": False},
+                labels={"Carga_Max_tf": "Carga (tf)", "ne": "Estacas", "Profundidade_m": "Prof. (m)", "Armadura_Principal": "Armadura"},
                 color_continuous_scale=px.colors.diverging.RdYlBu_r 
             )
-            
             fig.update_traces(textposition='top center', marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-            fig.update_layout(
-                height=700, 
-                plot_bgcolor='rgba(240, 240, 240, 0.8)',
-                title_text=f"Mapa de Calor: Profundidade Necessária (Baseado no {furo_selecionado if furo_selecionado else 'Padrão'})",
-                xaxis=dict(scaleanchor="y", scaleratio=1), 
-            )
+            fig.update_layout(height=700, plot_bgcolor='rgba(240, 240, 240, 0.8)', title_text="Mapa de Calor", xaxis=dict(scaleanchor="y", scaleratio=1))
             st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Erro ao gerar a visualização gráfica: {e}")
+        except Exception: pass
 
         with st.expander("👁️ Ver Memória de Cálculo Individual (Pilar a Pilar)", expanded=False):
             df_mostrar = df[["Pilar", "Carga_Max_tf", "ne", "Diametro_m", "Carga_por_Estaca_kN", "Profundidade_m", "Armadura_Principal", "Peso_Aco_kg", "Vol_Concreto_m3"]].copy()
-            df_mostrar.columns = ["Pilar", "Carga Total (tf)", "Nº Estacas", "Diâmetro (m)", "Esforço p/ Estaca (kN)", "Prof. Calculada (m)", "Detalhe da Gaiola", "Aço Total do Bloco (kg)", "Concreto do Bloco (m³)"]
             st.dataframe(df_mostrar, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("🏗️ Exportação para BIM (.IFC)")
+        
+        if HAS_BIM:
+            if st.button("🚀 Gerar Ficheiro 3D (.IFC)", type="primary", use_container_width=True):
+                with st.spinner("A modelar as estacas em 3D e a injetar metadados de engenharia..."):
+                    try:
+                        ifc_string = gerar_modelo_ifc(df)
+                        st.success("✅ Modelo BIM gerado com sucesso!")
+                        st.download_button(
+                            label="⬇️ Baixar Modelo IFC (Para Revit, Navisworks, etc.)",
+                            data=ifc_string.encode('utf-8'),
+                            file_name="Projeto_Fundacoes_UTEA.ifc",
+                            mime="application/octet-stream",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.error(f"Erro ao gerar IFC: {e}")
+        else:
+            st.error("❌ A biblioteca 'ifcopenshell' não foi carregada. Verifique se adicionou 'ifcopenshell' no requirements.txt.")
 
     else:
         st.warning("⚠️ **DIAGNÓSTICO:** O Radar não encontrou coordenadas na tabela do DXF.")
-
 else:
     st.info("👈 Faça o upload do Terreno (.utea) e da Planta do Eberick (.dxf) na barra lateral para iniciar a integração.")
