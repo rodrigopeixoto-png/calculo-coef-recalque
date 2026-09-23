@@ -18,7 +18,7 @@ st.title("🏢 Gestor BIM & Orçamento de Fundações")
 st.caption("Leitura Nativa de CAD (.DXF) com Radar Geométrico e Importação de Excel")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO: RADAR GEOMÉTRICO BLINDADO PARA TABELAS DXF (PADRÃO EBERICK)
+# FUNÇÃO: RADAR GEOMÉTRICO BLINDADO (ESCALA LIVRE) PARA TABELAS DXF
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
@@ -34,9 +34,11 @@ def extrair_tabela_do_dxf(dxf_bytes):
     textos_brutos = []
     
     def limpar_texto(txt):
-        t = re.sub(r'\\[A-Za-z0-9~]+;', '', str(txt)).strip()
+        t = str(txt).replace('\\P', ' ').replace('\\p', ' ')
+        t = re.sub(r'\\[A-Za-z0-9~]+;', '', t).strip()
         return t.replace('{', '').replace('}', '')
 
+    # Extrai absolutamente todos os textos do desenho
     for e in doc.modelspace():
         if e.dxftype() in ('TEXT', 'MTEXT'):
             t = e.dxf.text if e.dxftype() == 'TEXT' else e.text
@@ -62,13 +64,14 @@ def extrair_tabela_do_dxf(dxf_bytes):
 
     df_raw = pd.DataFrame(textos_brutos)
     
+    # Caça os cabeçalhos das colunas
     headers_x = {'x': None, 'y': None, 'carga': None, 'ne': None, 'estaca': None}
     
     for index, row in df_raw.iterrows():
         val = str(row['Texto']).lower().strip()
-        if val in ['x', 'x(cm)', 'x (cm)']: headers_x['x'] = row['X']
-        elif val in ['y', 'y(cm)', 'y (cm)']: headers_x['y'] = row['X']
-        elif 'carga' in val and ('máx' in val or 'max' in val or 'tf' in val): headers_x['carga'] = row['X']
+        if val in ['x', 'x(cm)', 'x (cm)', 'x(m)', 'x (m)']: headers_x['x'] = row['X']
+        elif val in ['y', 'y(cm)', 'y (cm)', 'y(m)', 'y (m)']: headers_x['y'] = row['X']
+        elif 'carga' in val and ('máx' in val or 'max' in val or 'tf' in val or 'kn' in val): headers_x['carga'] = row['X']
         elif val == 'ne': headers_x['ne'] = row['X']
         elif val == 'estaca': headers_x['estaca'] = row['X']
 
@@ -76,21 +79,24 @@ def extrair_tabela_do_dxf(dxf_bytes):
         for index, row in df_raw.iterrows():
             if 'carga' in str(row['Texto']).lower(): headers_x['carga'] = row['X']
 
+    # Identifica os Pilares (A âncora de cada linha)
     pilares = df_raw[df_raw['Texto'].str.match(r'^P\s*\d+$', case=False)]
     
     linhas_dados = []
     for _, p in pilares.iterrows():
         y_ref = p['Y']
-        linha_textos = df_raw[abs(df_raw['Y'] - y_ref) <= 35.0].copy()
+        # Tolerância Y alargada para 150 cm (apanha a linha mesmo com fontes gigantes)
+        linha_textos = df_raw[abs(df_raw['Y'] - y_ref) <= 150.0].copy()
         
         def pega_valor(chave):
             x_alvo = headers_x[chave]
             if x_alvo is None or len(linha_textos) == 0: return None
+            # Encontra o texto perfeitamente alinhado com a prumada X do cabeçalho
             linha_textos['Dist'] = abs(linha_textos['X'] - x_alvo)
             texto_perto = linha_textos.loc[linha_textos['Dist'].idxmin()]
-            if texto_perto['Dist'] < 60.0: 
-                return str(texto_perto['Texto'])
-            return None
+            
+            # Sem limites de distância! Retorna simplesmente o que estiver mais alinhado.
+            return str(texto_perto['Texto'])
             
         linhas_dados.append({
             "Pilar": str(p['Texto']).strip(),
@@ -103,6 +109,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
         
     df_final = pd.DataFrame(linhas_dados)
     
+    # Limpeza final dos números
     for col in ["X_cm", "Y_cm", "Carga_Max_tf", "ne"]:
         if col in df_final.columns:
             df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace(',', '.').str.extract(r'([-+]?\d*\.?\d+)')[0], errors='coerce')
@@ -128,7 +135,7 @@ if arquivo_upload is not None:
     ext = arquivo_upload.name.split('.')[-1].lower()
     
     if ext == 'dxf':
-        with st.spinner("A varrer o desenho CAD com o Radar Geométrico..."):
+        with st.spinner("A varrer o desenho CAD com o Radar Geométrico em Escala Livre..."):
             try:
                 df_extraido, df_raw_debug = extrair_tabela_do_dxf(arquivo_upload.getvalue())
                 
@@ -136,7 +143,7 @@ if arquivo_upload is not None:
                     st.session_state.df_projeto = df_extraido
                     st.sidebar.success(f"Tabela CAD lida com sucesso! ({len(df_extraido)} blocos extraídos)")
                 else:
-                    st.sidebar.warning("⚠️ O radar não encontrou os cabeçalhos padrão. Exibindo os textos brutos na tela principal para investigação.")
+                    st.sidebar.warning("⚠️ O radar não encontrou os cabeçalhos padrão. Exibindo textos brutos.")
                     st.session_state.df_projeto = df_raw_debug
                     
             except Exception as e:
@@ -160,7 +167,6 @@ taxa_aco_estimada = st.sidebar.number_input("Taxa de Aço Média (kg/m³ de bet�
 if st.session_state.df_projeto is not None:
     df = st.session_state.df_projeto.copy()
     
-    # Verifica se a tabela já passou pelo filtro inteligente do DXF/Excel (tem a coluna Pilar e X_cm)
     if "Pilar" in df.columns and "X_cm" in df.columns:
         
         # 1. Tratar os dados para o Orçamento e Desenho
@@ -176,7 +182,6 @@ if st.session_state.df_projeto is not None:
         else:
             df["Diametro_m"] = 0.50
 
-        # Garantir que as colunas críticas existem e não têm valores nulos (NaN) para não quebrar a matemática
         if "ne" not in df.columns: df["ne"] = 1
         df["ne"] = pd.to_numeric(df["ne"], errors='coerce').fillna(1)
         
@@ -206,14 +211,11 @@ if st.session_state.df_projeto is not None:
         # 3. PLANTA DE LOCAÇÃO INTERATIVA (BIM 2D)
         # -------------------------------------------------------------------------
         st.subheader("🗺️ Planta de Locação e Mapa de Cargas")
-        st.info("Passe o rato sobre os blocos para ver as informações extraídas cirurgicamente do seu arquivo.")
+        st.info("Passe o rato sobre os blocos para ver as informações extraídas cirurgicamente do seu arquivo DXF.")
         
-        # Criação da "Rede de Segurança" para o gráfico do Plotly não encravar
-        # Garante que o tamanho da bolha visual nunca é negativo nem zero
         df["Tamanho_Visual"] = df["Carga_Max_tf"].abs()
-        df.loc[df["Tamanho_Visual"] < 5, "Tamanho_Visual"] = 5 # Tamanho mínimo de segurança para desenhar
+        df.loc[df["Tamanho_Visual"] < 5, "Tamanho_Visual"] = 5 
         
-        # Garante que as colunas extraídas são convertidas para string/listas simples no hover
         if "Estaca" not in df.columns: df["Estaca"] = "N/A"
 
         try:
@@ -222,9 +224,9 @@ if st.session_state.df_projeto is not None:
                 x="X_m", 
                 y="Y_m", 
                 text="Pilar",
-                size="Tamanho_Visual", # Coluna segura que criámos acima
+                size="Tamanho_Visual", 
                 color="ne",          
-                hover_data=["Carga_Max_tf", "ne", "Estaca", "Diametro_m"], 
+                hover_data={"Carga_Max_tf": True, "ne": True, "Estaca": True, "Diametro_m": True, "X_m": False, "Y_m": False},
                 labels={"Carga_Max_tf": "Carga (tf)", "ne": "Nº de Estacas"},
                 color_continuous_scale=px.colors.sequential.Viridis
             )
@@ -249,8 +251,7 @@ if st.session_state.df_projeto is not None:
             st.success("Temos as Coordenadas, os Diâmetros, o número de estacas e as Cargas extraídas do CAD perfeitamente. O próximo passo de desenvolvimento será importar a biblioteca 'ifcopenshell' para transformar este mapa 2D num esqueleto 3D que abrirá direto no Revit!")
 
     else:
-        st.warning("⚠️ **DIAGNÓSTICO:** O Radar não conseguiu alinhar as colunas com os Pilares de forma perfeita.")
-        st.write("Abaixo está a Tabela Bruta (Exatamente o que o Python viu dentro do seu DXF).")
+        st.warning("⚠️ **DIAGNÓSTICO:** O Radar não conseguiu alinhar as colunas com os Pilares.")
         st.dataframe(df, use_container_width=True)
 
 else:
