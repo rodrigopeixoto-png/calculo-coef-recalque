@@ -15,10 +15,10 @@ except ImportError:
 st.set_page_config(page_title="Gestor BIM e Orçamento - Fundações", page_icon="🏢", layout="wide")
 
 st.title("🏢 Gestor BIM & Orçamento de Fundações")
-st.caption("Leitura Nativa de CAD (.DXF) com Radar Geométrico e Importação de Excel")
+st.caption("Leitura Nativa de CAD (.DXF) com Radar Auto-Escalável e Importação de Excel")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO: RADAR GEOMÉTRICO BLINDADO (ESCALA LIVRE) PARA TABELAS DXF
+# FUNÇÃO: RADAR GEOMÉTRICO AUTO-ESCALÁVEL PARA TABELAS DXF
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
@@ -38,35 +38,30 @@ def extrair_tabela_do_dxf(dxf_bytes):
         t = re.sub(r'\\[A-Za-z0-9~]+;', '', t).strip()
         return t.replace('{', '').replace('}', '')
 
-    # Extrai absolutamente todos os textos do desenho
+    # Extrai todos os textos
     for e in doc.modelspace():
         if e.dxftype() in ('TEXT', 'MTEXT'):
             t = e.dxf.text if e.dxftype() == 'TEXT' else e.text
             t_limpo = limpar_texto(t)
-            if t_limpo:
-                textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
+            if t_limpo: textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
                 
         elif e.dxftype() == 'INSERT':
             for attrib in e.attribs:
                 t_limpo = limpar_texto(attrib.dxf.text)
-                if t_limpo: 
-                    textos_brutos.append({'Texto': t_limpo, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
+                if t_limpo: textos_brutos.append({'Texto': t_limpo, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
             block = doc.blocks.get(e.dxf.name)
             if block:
                 for entity in block.query('TEXT MTEXT'):
                     t = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
                     t_limpo = limpar_texto(t)
-                    if t_limpo:
-                        textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
+                    if t_limpo: textos_brutos.append({'Texto': t_limpo, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
 
-    if not textos_brutos: 
-        return None, pd.DataFrame()
+    if not textos_brutos: return None, pd.DataFrame()
 
     df_raw = pd.DataFrame(textos_brutos)
     
-    # Caça os cabeçalhos das colunas
+    # 1. Caça os cabeçalhos das colunas
     headers_x = {'x': None, 'y': None, 'carga': None, 'ne': None, 'estaca': None}
-    
     for index, row in df_raw.iterrows():
         val = str(row['Texto']).lower().strip()
         if val in ['x', 'x(cm)', 'x (cm)', 'x(m)', 'x (m)']: headers_x['x'] = row['X']
@@ -79,24 +74,39 @@ def extrair_tabela_do_dxf(dxf_bytes):
         for index, row in df_raw.iterrows():
             if 'carga' in str(row['Texto']).lower(): headers_x['carga'] = row['X']
 
-    # Identifica os Pilares (A âncora de cada linha)
-    pilares = df_raw[df_raw['Texto'].str.match(r'^P\s*\d+$', case=False)]
+    # 2. Identifica os Pilares
+    pilares = df_raw[df_raw['Texto'].str.match(r'^P\s*\d+$', case=False)].copy()
     
+    if len(pilares) == 0: return None, df_raw
+
+    # 3. MÁGICA AUTO-ESCALÁVEL: Calcular o espaçamento exato das linhas do CAD
+    y_vals = sorted(pilares['Y'].unique(), reverse=True)
+    if len(y_vals) > 1:
+        espacamentos = [abs(y_vals[i] - y_vals[i+1]) for i in range(len(y_vals)-1)]
+        tolerancia_y = np.median(espacamentos) * 0.40 # 40% do espaço de uma linha para a outra
+    else:
+        tolerancia_y = 15.0 # Fallback genérico se só existir 1 pilar
+    
+    # 4. Cruzamento de dados com Bloqueio de Linha
     linhas_dados = []
     for _, p in pilares.iterrows():
         y_ref = p['Y']
-        # Tolerância Y alargada para 150 cm (apanha a linha mesmo com fontes gigantes)
-        linha_textos = df_raw[abs(df_raw['Y'] - y_ref) <= 150.0].copy()
+        # Foca APENAS na linha atual, ignorando cabeçalhos e linhas adjacentes
+        linha_textos = df_raw[abs(df_raw['Y'] - y_ref) <= tolerancia_y].copy()
         
         def pega_valor(chave):
             x_alvo = headers_x[chave]
             if x_alvo is None or len(linha_textos) == 0: return None
-            # Encontra o texto perfeitamente alinhado com a prumada X do cabeçalho
+            
+            # Encontra o texto desta linha que está mais alinhado com o cabeçalho
             linha_textos['Dist'] = abs(linha_textos['X'] - x_alvo)
             texto_perto = linha_textos.loc[linha_textos['Dist'].idxmin()]
             
-            # Sem limites de distância! Retorna simplesmente o que estiver mais alinhado.
-            return str(texto_perto['Texto'])
+            # Retorna o texto se não for exatamente o próprio texto do cabeçalho
+            texto_final = str(texto_perto['Texto']).strip()
+            if texto_final.lower() not in ['x', 'y', 'x(cm)', 'y(cm)', 'ne', 'estaca']:
+                return texto_final
+            return None
             
         linhas_dados.append({
             "Pilar": str(p['Texto']).strip(),
@@ -116,7 +126,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
             
     df_final = df_final.dropna(subset=['Pilar'])
     
-    if len(df_final) > 0 and headers_x['x'] is not None and headers_x['y'] is not None:
+    if len(df_final) > 0 and headers_x['x'] is not None:
         return df_final, df_raw
         
     return None, df_raw
@@ -135,7 +145,7 @@ if arquivo_upload is not None:
     ext = arquivo_upload.name.split('.')[-1].lower()
     
     if ext == 'dxf':
-        with st.spinner("A varrer o desenho CAD com o Radar Geométrico em Escala Livre..."):
+        with st.spinner("A varrer o desenho CAD com Radar Auto-Escalável..."):
             try:
                 df_extraido, df_raw_debug = extrair_tabela_do_dxf(arquivo_upload.getvalue())
                 
@@ -248,7 +258,7 @@ if st.session_state.df_projeto is not None:
         st.markdown("---")
         st.subheader("🏗️ Próximo Passo: Exportação BIM")
         if st.button("🚀 Gerar Modelo 3D (.IFC)", type="primary", use_container_width=True):
-            st.success("Temos as Coordenadas, os Diâmetros, o número de estacas e as Cargas extraídas do CAD perfeitamente. O próximo passo de desenvolvimento será importar a biblioteca 'ifcopenshell' para transformar este mapa 2D num esqueleto 3D que abrirá direto no Revit!")
+            st.success("Temos as Coordenadas, os Diâmetros, o número de estacas e as Cargas extraídas do CAD perfeitamente. O próximo passo será exportar para Revit/Navisworks!")
 
     else:
         st.warning("⚠️ **DIAGNÓSTICO:** O Radar não conseguiu alinhar as colunas com os Pilares.")
