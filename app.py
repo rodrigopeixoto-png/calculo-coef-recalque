@@ -116,7 +116,7 @@ if os.path.exists(logo_path):
     st.sidebar.image(logo_path, use_container_width=True)
 
 st.sidebar.header("📝 Identificação do Projeto")
-nome_obra = st.sidebar.text_input("Nome da Obra", value="Edificação Pública - Delegacia Cidadã")
+nome_obra = st.sidebar.text_input("Nome da Obra", value="")
 resp_tecnico = st.sidebar.text_input("Responsável Técnico", value="Eng. ")
 registro_crea = st.sidebar.text_input("Registro CREA", value="")
 
