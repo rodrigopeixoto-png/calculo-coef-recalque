@@ -8,12 +8,11 @@ import json
 import os
 import datetime
 import fitz  # PyMuPDF
-import pdfplumber # Leitor OFFLINE (Extração Relâmpago)
-import base64 # Para serializar imagens no salvamento do projeto
+import pdfplumber # Leitor OFFLINE
+import base64 
 from PIL import Image as PILImage
 import google.generativeai as genai
 
-# Imports do ReportLab para geração do PDF
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as ReportLabImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -52,9 +51,6 @@ FATORES_CONSTRUTIVOS = {
 
 st.set_page_config(page_title="Dimensionamento de Estacas UTEA", page_icon="🏗️", layout="wide")
 
-# -----------------------------------------------------------------------------
-# ESTADO DA APLICAÇÃO (CARRINHO DE FUROS E CROQUI)
-# -----------------------------------------------------------------------------
 if 'projeto_furos' not in st.session_state:
     st.session_state.projeto_furos = {} 
 
@@ -72,9 +68,6 @@ if 'furo_atual_img' not in st.session_state:
 if 'furo_atual_nome' not in st.session_state:
     st.session_state.furo_atual_nome = "SP-01"
 
-# -----------------------------------------------------------------------------
-# FUNÇÕES DE SALVAMENTO/CARREGAMENTO DE PROJETO
-# -----------------------------------------------------------------------------
 def exportar_projeto_json():
     dados = {
         "furos": {},
@@ -109,7 +102,7 @@ def carregar_projeto_json(json_str):
         return False
 
 # -----------------------------------------------------------------------------
-# SIDEBAR - CABEÇALHO INSTITUCIONAL E PARÂMETROS GLOBAIS
+# SIDEBAR
 # -----------------------------------------------------------------------------
 logo_path = "fundo_transparente_2.png"
 if os.path.exists(logo_path):
@@ -187,7 +180,6 @@ st.sidebar.markdown("---")
 st.sidebar.header("📄 Relatório PDF")
 incluir_pm = st.sidebar.checkbox("Incluir Diagrama de Interação P-M?", value=True)
 
-# GERAÇÃO DO ARQUIVO .UTEA
 st.sidebar.markdown("---")
 st.sidebar.header("💾 Gestão do Arquivo do Projeto")
 st.sidebar.info("Guarde o seu trabalho para continuar mais tarde.")
@@ -214,7 +206,7 @@ if upload_proj is not None:
             st.sidebar.error("Erro ao carregar o arquivo. Formato inválido.")
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE DESENHO (SEÇÃO, PERFIL LONGITUDINAL E DIAGRAMA P-M)
+# FUNÇÕES DE DESENHO
 # -----------------------------------------------------------------------------
 def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
     fig, ax = plt.subplots(figsize=(4, 4))
@@ -460,12 +452,13 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
 
-    M_rd = n_barras * area_barra * ((fyk / 1.15) * 1000) * (0.75 * B if secao == "Circular" else 0.80 * B)
+    # NOVO: Fator de aproximação estrutural para seções com armadura distribuída no perímetro
+    fator_z_eq = 0.35 if secao == "Circular" else 0.40
+    As_total = n_barras * area_barra
+    M_rd = As_total * ((fyk / 1.15) * 1000) * (fator_z_eq * B)
     H_rd = M_rd / momento_max_unit if momento_max_unit > 0 else 0
     
-    As_total = n_barras * area_barra
     V_concreto = Area_c * comprimento_estaca
-    
     qtd_estribos = int(L_armadura_calc / (espacamento_estribo / 100))
     peso_long = As_total * L_armadura_calc * 7850
     peso_estribo = qtd_estribos * (np.pi * (B - 0.10) if secao == "Circular" else 4 * (B - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
@@ -482,7 +475,8 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "qtd_estribos": qtd_estribos,
         "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr,
         "Area_c": Area_c, "Perimetro": Perimetro, "E_c": E_c, "Inercia_c": Inercia_c,
-        "f1": f1, "f2": f2, "alfa_dq": alfa_dq, "beta_dq": beta_dq, "beta_t": beta_t, "As_total": As_total
+        "f1": f1, "f2": f2, "alfa_dq": alfa_dq, "beta_dq": beta_dq, "beta_t": beta_t, "As_total": As_total,
+        "fator_z_eq": fator_z_eq
     }
 
 
@@ -491,7 +485,7 @@ st.title("🏗️ Projeto Integrado de Fundações")
 st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Detalhamento de Armaduras e Diagrama P-M")
 
 # -----------------------------------------------------------------------------
-# COLUNA ESQUERDA: IMPORTAÇÃO, IA, OFFLINE E CROQUI
+# COLUNA ESQUERDA
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 2])
 
@@ -642,7 +636,6 @@ with col_esq:
             st.error(f"Erro PDF: {e}")
             doc = None
 
-    # Tabela de Edição / Copy-Paste do Excel
     st.markdown("---")
     st.write(f"**Tabela de Preenchimento: {nome_furo_input}** (Aceita Colar do Excel)")
     df_editado = st.data_editor(
@@ -698,7 +691,7 @@ with col_esq:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# COLUNA DIREITA: ABAS DE RESULTADOS (RESUMO GERAL + ANÁLISE DETALHADA)
+# COLUNA DIREITA
 # -----------------------------------------------------------------------------
 with col_dir:
     tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", "🔍 Análise Detalhada dos Furos"])
@@ -828,7 +821,7 @@ with col_dir:
         plt.close(fig_g)
 
 # -----------------------------------------------------------------------------
-# GERAÇÃO DO MEGA RELATÓRIO PDF COM OS 3 MÉTODOS E CROQUI
+# GERAÇÃO DO MEGA RELATÓRIO PDF
 # -----------------------------------------------------------------------------
 def gerar_pdf_multiprojeto():
     if len(st.session_state.projeto_furos) == 0: return None
@@ -841,7 +834,6 @@ def gerar_pdf_multiprojeto():
     h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
     body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
 
-    # 1. CABEÇALHO
     if os.path.exists(logo_path):
         im = ReportLabImage(logo_path, width=150, height=60)
         im.hAlign = 'LEFT'
@@ -857,7 +849,6 @@ def gerar_pdf_multiprojeto():
     story.append(Paragraph("<b>Projeto Geotécnico Consolidado - Múltiplos Furos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
     story.append(Spacer(1, 15))
 
-    # 2. RESUMO E TABELA COMPARATIVA GERAL
     story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
     story.append(Paragraph(f"<b>Critério de Segurança Adotado:</b> {criterio_q_adm}<br/>", body_style))
     story.append(Paragraph(recomendacao.replace('\n', '<br/>'), body_style))
@@ -872,7 +863,6 @@ def gerar_pdf_multiprojeto():
     story.append(t_res_geral)
     story.append(PageBreak())
 
-    # 3. CROQUI (SE EXISTIR)
     if st.session_state.croqui_img is not None:
         story.append(Paragraph("<b>2. Croqui de Locação dos Furos</b>", h2_style))
         story.append(Spacer(1, 10))
@@ -883,7 +873,6 @@ def gerar_pdf_multiprojeto():
     else:
         num_seccao = 2
 
-    # 4. LOOP DOS FUROS NO PDF
     for nome_furo, dados in st.session_state.projeto_furos.items():
         res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
         
@@ -896,9 +885,6 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph(txt_cap, body_style))
         story.append(Spacer(1, 5))
         
-        # ---------------------------------------------------------------------
-        # MEMÓRIA DE CÁLCULO EXAUSTIVA E DETALHAMENTO DA ARMADURA
-        # ---------------------------------------------------------------------
         story.append(Paragraph("<b>Memória de Cálculo Detalhada e Estrutural</b>", h2_style))
         
         txt_geo = f"<b>Geometria:</b> Comprimento da Estaca = {comprimento_estaca:.2f} m | Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
@@ -909,7 +895,6 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
 
-        # Incluir Desenhos de Seção, Perfil e PM se autorizado
         fig_sec = plot_secao_transversal(B, secao, res['n_barras'], bitola, bitola_estribo)
         buf_sec = io.BytesIO()
         fig_sec.savefig(buf_sec, format='png', dpi=150, bbox_inches='tight')
@@ -939,43 +924,41 @@ def gerar_pdf_multiprojeto():
         
         story.append(Spacer(1, 15))
 
-        # --- AQUI VEM O DETALHAMENTO DAS EQUAÇÕES ---
         story.append(Paragraph("<b>Equações Analíticas Utilizadas</b>", h2_style))
         eq_style = ParagraphStyle('EQ', parent=body_style, leftIndent=15, spaceBefore=2, spaceAfter=2, fontSize=8)
         legenda_style = ParagraphStyle('LEG', parent=body_style, leftIndent=0, spaceBefore=4, spaceAfter=10, fontSize=7, textColor=colors.grey)
 
         if criterio_q_adm in ["Apenas Aoki-Velloso", "Média dos Métodos", "Menor Valor (Mais Conservador)"]:
             story.append(Paragraph("<b>Método de Aoki-Velloso (1975):</b>", body_style))
-            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = (K · N<sub>SPT</sub> / F<sub>1</sub>) · A<sub>c</sub>", eq_style))
-            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ (α · K · N<sub>SPT</sub> / F<sub>2</sub>) · U · Δz ]", eq_style))
+            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = (K x N<sub>SPT</sub> / F<sub>1</sub>) x A<sub>c</sub>", eq_style))
+            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ (α x K x N<sub>SPT</sub> / F<sub>2</sub>) x U x Δz ]", eq_style))
             story.append(Paragraph(f"• Fatores Adotados para Estaca {metodo_construtivo}: F<sub>1</sub> = {res['f1']} | F<sub>2</sub> = {res['f2']}", eq_style))
             story.append(Spacer(1, 4))
 
         if criterio_q_adm in ["Apenas Décourt-Quaresma", "Média dos Métodos", "Menor Valor (Mais Conservador)"]:
             story.append(Paragraph("<b>Método de Décourt-Quaresma (1996):</b>", body_style))
-            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = α · C · N<sub>SPT</sub> · A<sub>c</sub>", eq_style))
-            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ β · 10 · ((N<sub>eq</sub> / 3) + 1) · U · Δz ]", eq_style))
+            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = α x C x N<sub>SPT</sub> x A<sub>c</sub>", eq_style))
+            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ β x 10 x ((N<sub>eq</sub> / 3) + 1) x U x Δz ]", eq_style))
             story.append(Paragraph(f"• Fatores Adotados para Estaca {metodo_construtivo}: α = {res['alfa_dq']} | β = {res['beta_dq']}", eq_style))
             story.append(Spacer(1, 4))
 
         if criterio_q_adm in ["Apenas Teixeira", "Média dos Métodos", "Menor Valor (Mais Conservador)"]:
             story.append(Paragraph("<b>Método de Teixeira (1996):</b>", body_style))
-            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = α<sub>T</sub> · N<sub>SPT</sub> · A<sub>c</sub>", eq_style))
-            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ β<sub>T</sub> · N<sub>SPT</sub> · U · Δz ]", eq_style))
+            story.append(Paragraph("• Resistência de Ponta: R<sub>p</sub> = α<sub>T</sub> x N<sub>SPT</sub> x A<sub>c</sub>", eq_style))
+            story.append(Paragraph("• Atrito Lateral: R<sub>l</sub> = Σ [ β<sub>T</sub> x N<sub>SPT</sub> x U x Δz ]", eq_style))
             story.append(Paragraph(f"• Fatores Adotados para Estaca {metodo_construtivo}: β<sub>T</sub> = {res['beta_t']}", eq_style))
             story.append(Spacer(1, 4))
 
         story.append(Paragraph("<b>Modelo Estrutural e Interação Solo-Estrutura (Winkler):</b>", body_style))
-        story.append(Paragraph("• Fator de Rigidez Relativa: λ = [ (K<sub>h</sub> · B) / (4 · E<sub>c</sub> · I<sub>c</sub>) ]<sup>0.25</sup>", eq_style))
-        story.append(Paragraph("• Deslocamento Lateral: y(z) = [e<sup>-λz</sup> / (2 E<sub>c</sub> I<sub>c</sub> λ³)] · [H cos(λz) + λ M (cos(λz) + sin(λz))]", eq_style))
+        story.append(Paragraph("• Fator de Rigidez Relativa: λ = [ (K<sub>h</sub> x B) / (4 x E<sub>c</sub> x I<sub>c</sub>) ]<sup>0.25</sup>", eq_style))
+        story.append(Paragraph("• Deslocamento Lateral: y(z) = [e<sup>-λz</sup> / (2 E<sub>c</sub> I<sub>c</sub> λ³)] x [H cos(λz) + λ M (cos(λz) + sin(λz))]", eq_style))
         story.append(Spacer(1, 4))
         
-        # --- NOVO BLOCO EXCLUSIVO PARA O RESULTADO ESTRUTURAL (MRd e HRd) ---
         story.append(Paragraph("<b>Capacidade Estrutural da Seção (Armadura):</b>", body_style))
-        z_val = 0.75 * B if secao == "Circular" else 0.80 * B
-        z_str = "0.75 B" if secao == "Circular" else "0.80 B"
-        story.append(Paragraph(f"• Momento Resistente: M<sub>Rd</sub> = A<sub>s,tot</sub> · f<sub>yd</sub> · z   |   (Braço de alavanca z ≈ {z_str})", eq_style))
-        story.append(Paragraph(f"  <i>M<sub>Rd</sub> = {res['As_total']:.6f} m² · ({fyk}/1.15)·10³ kPa · {z_val:.3f} m = <b>{res['M_rd']:.1f} kN.m</b></i>", eq_style))
+        z_str = "0.35 B" if secao == "Circular" else "0.40 B"
+        z_val = res['fator_z_eq'] * B
+        story.append(Paragraph(f"• Momento Resistente: M<sub>Rd</sub> = A<sub>s,tot</sub> x f<sub>yd</sub> x z<sub>eq</sub>   |   (Braço de alavanca efetivo z<sub>eq</sub> ≈ {z_str})", eq_style))
+        story.append(Paragraph(f"  <i>M<sub>Rd</sub> = {res['As_total']:.6f} m² x ({fyk}/1.15) x 10³ kPa x {z_val:.3f} m = <b>{res['M_rd']:.1f} kN.m</b></i>", eq_style))
         story.append(Paragraph(f"• Força Horizontal Máx: H<sub>Rd</sub> = M<sub>Rd</sub> / M<sub>max,unit</sub>", eq_style))
         story.append(Paragraph(f"  <i>H<sub>Rd</sub> = {res['M_rd']:.1f} kN.m / {res['momento_max_unit']:.4f} m = <b>{res['H_rd']:.1f} kN</b></i>", eq_style))
         story.append(Spacer(1, 4))
@@ -983,7 +966,6 @@ def gerar_pdf_multiprojeto():
         txt_legenda = "<i><u>Nomenclatura:</u> <b>A<sub>c</sub></b> = Área da Seção; <b>U</b> = Perímetro; <b>Δz</b> = Incremento de profundidade; <b>N<sub>SPT</sub></b> = Índice de penetração; <b>K, C, α, β</b> = Parâmetros do solo; <b>H</b> = Força Horizontal; <b>M</b> = Momento Fletor; <b>M<sub>max,unit</sub></b> = Momento gerado por força horizontal unitária de 1kN.</i>"
         story.append(Paragraph(txt_legenda, legenda_style))
         
-        # Tabela Detalhada com Kh e Kv
         if criterio_q_adm == "Apenas Aoki-Velloso":
             data_tab = [["Prof(m)", "Solo", "N", "K", "α", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
             for idx, r in res["df_inf"].iterrows(): 
@@ -1020,7 +1002,6 @@ def gerar_pdf_multiprojeto():
         story.append(t_m)
         story.append(PageBreak())
         
-        # GERAR GRÁFICOS DO FURO ESPECÍFICO (Página de Anexos Visuais)
         story.append(Paragraph("<b>Análise Visual de Comportamento</b>", h2_style))
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
         ax1.plot(res["df_inf"]["Rc Adm Aoki (kN)"], res["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
@@ -1045,7 +1026,6 @@ def gerar_pdf_multiprojeto():
         story.append(ReportLabImage(buf_graf, width=500, height=130))
         story.append(Spacer(1, 15))
         
-        # IMAGEM ORIGINAL DO FURO
         if dados["img"] is not None:
             story.append(Paragraph(f"<b>Anexo Visual: Imagem Capturada do {nome_furo}</b>", h2_style))
             img_buffer = io.BytesIO(dados["img"])
