@@ -4,6 +4,8 @@ import numpy as np
 import plotly.express as px
 import io
 import re
+import tempfile
+import os
 
 try:
     import ezdxf
@@ -19,9 +21,18 @@ st.caption("Leitura Nativa de CAD (.DXF) com Radar Geométrico e Importação de
 # FUNÇÃO: RADAR GEOMÉTRICO BLINDADO PARA TABELAS DXF (PADRÃO EBERICK)
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
-    # 1. Lê o ficheiro DXF
-    text_stream = io.StringIO(dxf_bytes.decode('utf-8', errors='ignore'))
-    doc = ezdxf.read(text_stream)
+    # 1. Cria um arquivo temporário físico para evitar erros de leitura Binária (Invalid binary data)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
+        tmp.write(dxf_bytes)
+        tmp_path = tmp.name
+        
+    try:
+        # A função readfile deteta automaticamente se o DXF é ASCII ou Binário
+        doc = ezdxf.readfile(tmp_path)
+    finally:
+        # Limpa o arquivo temporário independentemente de sucesso ou erro
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
     
     textos_brutos = []
     
