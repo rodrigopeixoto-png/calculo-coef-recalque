@@ -109,7 +109,7 @@ if os.path.exists(logo_path):
     st.sidebar.image(logo_path, use_container_width=True)
 
 st.sidebar.header("📝 Identificação do Projeto")
-nome_obra = st.sidebar.text_input("Nome da Obra", value="")
+nome_obra = st.sidebar.text_input("Nome da Obra", value="Edificação Pública - Delegacia Cidadã")
 resp_tecnico = st.sidebar.text_input("Responsável Técnico", value="Eng. ")
 registro_crea = st.sidebar.text_input("Registro CREA", value="")
 
@@ -204,125 +204,6 @@ if upload_proj is not None:
             st.rerun()
         else:
             st.sidebar.error("Erro ao carregar o arquivo. Formato inválido.")
-
-# -----------------------------------------------------------------------------
-# FUNÇÕES DE DESENHO
-# -----------------------------------------------------------------------------
-def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
-    fig, ax = plt.subplots(figsize=(4, 4))
-    cob = 0.05  
-    
-    if secao_tipo == "Circular":
-        circle_ext = plt.Circle((0, 0), B_m/2, color='#E0E0E0', ec='black', lw=1.5, zorder=1)
-        raio_estribo = B_m/2 - cob
-        circle_int = plt.Circle((0, 0), raio_estribo, color='none', ec='red', lw=1.5, zorder=2)
-        ax.add_patch(circle_ext)
-        ax.add_patch(circle_int)
-        
-        angles = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
-        r_barras = raio_estribo - (bitola_estribo_mm/2000) - (bitola_long_mm/2000)
-        for angle in angles:
-            x = r_barras * np.cos(angle)
-            y = r_barras * np.sin(angle)
-            rebar = plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3)
-            ax.add_patch(rebar)
-            
-    else: 
-        rect_ext = plt.Rectangle((-B_m/2, -B_m/2), B_m, B_m, color='#E0E0E0', ec='black', lw=1.5, zorder=1)
-        L_estribo = B_m - 2*cob
-        rect_int = plt.Rectangle((-L_estribo/2, -L_estribo/2), L_estribo, L_estribo, color='none', ec='red', lw=1.5, zorder=2)
-        ax.add_patch(rect_ext)
-        ax.add_patch(rect_int)
-        
-        L_barras = L_estribo - (bitola_estribo_mm/1000) - (bitola_long_mm/1000)
-        perimetro = 4 * L_barras
-        for i in range(n_barras):
-            s = (i / n_barras) * perimetro
-            if s <= L_barras: 
-                x, y = -L_barras/2 + s, L_barras/2
-            elif s <= 2*L_barras: 
-                x, y = L_barras/2, L_barras/2 - (s - L_barras)
-            elif s <= 3*L_barras: 
-                x, y = L_barras/2 - (s - 2*L_barras), -L_barras/2
-            else: 
-                x, y = -L_barras/2, -L_barras/2 + (s - 3*L_barras)
-            rebar = plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3)
-            ax.add_patch(rebar)
-
-    ax.set_xlim(-B_m/2 - 0.05, B_m/2 + 0.05)
-    ax.set_ylim(-B_m/2 - 0.05, B_m/2 + 0.05)
-    ax.set_aspect('equal')
-    ax.axis('off')
-    ax.set_title(f"Armadura: {n_barras} Φ {bitola_long_mm:.1f} mm\nEstribo: Φ {bitola_estribo_mm:.1f} c/ {espacamento_estribo:.0f}cm", fontsize=10)
-    return fig
-
-def plot_perfil_longitudinal(B_m, comp_estaca, L_armadura, espacamento_estribo_cm):
-    fig, ax = plt.subplots(figsize=(1.5, 4))
-    cob = 0.05
-    raio_arm = B_m/2 - cob
-
-    ax.plot([-B_m/2, -B_m/2], [0, -comp_estaca], color='black', lw=1.5)
-    ax.plot([B_m/2, B_m/2], [0, -comp_estaca], color='black', lw=1.5)
-    ax.plot([-B_m/2, B_m/2], [-comp_estaca, -comp_estaca], color='black', lw=1.5)
-    ax.plot([-B_m/2, B_m/2], [0, 0], color='black', lw=1.5)
-    ax.fill_betweenx([0, -comp_estaca], -B_m/2, B_m/2, color='#E0E0E0', alpha=0.5)
-
-    ax.plot([-raio_arm, -raio_arm], [0, -L_armadura], color='red', lw=2)
-    ax.plot([raio_arm, raio_arm], [0, -L_armadura], color='red', lw=2)
-    ax.plot([-raio_arm, raio_arm], [-L_armadura, -L_armadura], color='red', lw=2)
-
-    esp_m = espacamento_estribo_cm / 100
-    z_estribos = np.arange(0, -L_armadura, -esp_m)
-    for z in z_estribos:
-        ax.plot([-raio_arm, raio_arm], [z, z], color='red', lw=0.5)
-
-    ax.set_xlim(-B_m*1.5, B_m*1.5)
-    ax.set_ylim(-comp_estaca - 0.5, 0.5)
-    ax.set_xticks([])
-    ax.set_ylabel("Profundidade (m)", fontsize=8)
-    ax.set_title("Perfil", fontsize=10)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
-    
-    fig.tight_layout()
-    return fig
-
-def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
-    fcd = (fck / 1.4) * 1000 
-    fyd = (fyk / 1.15) * 1000 
-    
-    N_max_comp = 0.85 * fcd * Area_c + fyd * As
-    N_max_trac = -fyd * As
-    N_bal = 0.35 * N_max_comp 
-    M_bal = 1.35 * M_rd       
-    
-    N_vals = np.linspace(N_max_trac, N_max_comp, 100)
-    M_vals = []
-    
-    for n in N_vals:
-        if n < 0:
-            m = M_rd * (1 - (n/N_max_trac)**2)
-        elif n < N_bal:
-            m = M_rd + (M_bal - M_rd) * ((n/N_bal)**0.65)
-        else:
-            m = M_bal * (1 - ((n - N_bal)/(N_max_comp - N_bal))**1.8)
-        M_vals.append(max(0, m))
-        
-    fig, ax = plt.subplots(figsize=(4, 4))
-    ax.plot(M_vals, N_vals, color='#1E3A8A', lw=2, label='Envoltória Resistente')
-    ax.fill_betweenx(N_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
-    
-    ax.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante ($S_d$)')
-    
-    ax.axhline(0, color='black', linewidth=1)
-    ax.axvline(0, color='black', linewidth=1)
-    ax.set_xlabel('Momento Fletor (kN.m)')
-    ax.set_ylabel('Carga Axial (kN)')
-    ax.set_title('Diagrama de Interação (P-M)')
-    ax.legend(fontsize=8)
-    ax.grid(True, ls='--', alpha=0.5)
-    return fig
 
 # -----------------------------------------------------------------------------
 # FUNÇÃO NÚCLEO DE CÁLCULO
@@ -452,7 +333,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
 
-    # NOVO: Fator de aproximação estrutural para seções com armadura distribuída no perímetro
+    # Fator de aproximação estrutural para seções com armadura distribuída no perímetro
     fator_z_eq = 0.35 if secao == "Circular" else 0.40
     As_total = n_barras * area_barra
     M_rd = As_total * ((fyk / 1.15) * 1000) * (fator_z_eq * B)
@@ -479,21 +360,120 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "fator_z_eq": fator_z_eq
     }
 
+# -----------------------------------------------------------------------------
+# PLOTAGEM CONSOLIDADA (PARA STREAMLIT E PDF NÃO DESALINHAREM)
+# -----------------------------------------------------------------------------
+def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm, comp_estaca, L_armadura, espacamento_estribo_cm, M_rd, fck, fyk, Area_c, As, carga_V, momento_max, incluir_diagrama_pm=True):
+    n_cols = 3 if incluir_diagrama_pm else 2
+    largura_fig = 11 if incluir_diagrama_pm else 7.5
+    ratios = [1, 0.6, 1.4] if incluir_diagrama_pm else [1, 0.6]
+    
+    fig = plt.figure(figsize=(largura_fig, 4))
+    gs = fig.add_gridspec(1, n_cols, width_ratios=ratios)
+    
+    # --- 1. SEÇÃO TRANSVERSAL ---
+    ax1 = fig.add_subplot(gs[0])
+    cob = 0.05  
+    if secao_tipo == "Circular":
+        ax1.add_patch(plt.Circle((0, 0), B_m/2, color='#E0E0E0', ec='black', lw=1.5, zorder=1))
+        raio_estribo = B_m/2 - cob
+        ax1.add_patch(plt.Circle((0, 0), raio_estribo, color='none', ec='red', lw=1.5, zorder=2))
+        angles = np.linspace(0, 2*np.pi, n_barras, endpoint=False)
+        r_barras = raio_estribo - (bitola_estribo_mm/2000) - (bitola_long_mm/2000)
+        for angle in angles:
+            x, y = r_barras * np.cos(angle), r_barras * np.sin(angle)
+            ax1.add_patch(plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3))
+    else: 
+        ax1.add_patch(plt.Rectangle((-B_m/2, -B_m/2), B_m, B_m, color='#E0E0E0', ec='black', lw=1.5, zorder=1))
+        L_estribo = B_m - 2*cob
+        ax1.add_patch(plt.Rectangle((-L_estribo/2, -L_estribo/2), L_estribo, L_estribo, color='none', ec='red', lw=1.5, zorder=2))
+        L_barras = L_estribo - (bitola_estribo_mm/1000) - (bitola_long_mm/1000)
+        perimetro = 4 * L_barras
+        for i in range(n_barras):
+            s = (i / n_barras) * perimetro
+            if s <= L_barras: x, y = -L_barras/2 + s, L_barras/2
+            elif s <= 2*L_barras: x, y = L_barras/2, L_barras/2 - (s - L_barras)
+            elif s <= 3*L_barras: x, y = L_barras/2 - (s - 2*L_barras), -L_barras/2
+            else: x, y = -L_barras/2, -L_barras/2 + (s - 3*L_barras)
+            ax1.add_patch(plt.Circle((x, y), bitola_long_mm/2000, color='black', zorder=3))
+
+    ax1.set_xlim(-B_m/2 - 0.05, B_m/2 + 0.05)
+    ax1.set_ylim(-B_m/2 - 0.05, B_m/2 + 0.05)
+    ax1.set_aspect('equal')
+    ax1.axis('off')
+    ax1.set_title(f"Seção: {n_barras} Φ {bitola_long_mm:.1f} mm\nEstribo: Φ {bitola_estribo_mm:.1f} c/ {espacamento_estribo_cm:.0f}cm", fontsize=10)
+
+    # --- 2. PERFIL LONGITUDINAL ---
+    ax2 = fig.add_subplot(gs[1])
+    raio_arm = B_m/2 - cob
+    ax2.plot([-B_m/2, -B_m/2], [0, -comp_estaca], color='black', lw=1.5)
+    ax2.plot([B_m/2, B_m/2], [0, -comp_estaca], color='black', lw=1.5)
+    ax2.plot([-B_m/2, B_m/2], [-comp_estaca, -comp_estaca], color='black', lw=1.5)
+    ax2.plot([-B_m/2, B_m/2], [0, 0], color='black', lw=1.5)
+    ax2.fill_betweenx([0, -comp_estaca], -B_m/2, B_m/2, color='#E0E0E0', alpha=0.5)
+
+    ax2.plot([-raio_arm, -raio_arm], [0, -L_armadura], color='red', lw=2)
+    ax2.plot([raio_arm, raio_arm], [0, -L_armadura], color='red', lw=2)
+    ax2.plot([-raio_arm, raio_arm], [-L_armadura, -L_armadura], color='red', lw=2)
+
+    esp_m = espacamento_estribo_cm / 100
+    z_estribos = np.arange(0, -L_armadura, -esp_m)
+    for z in z_estribos:
+        ax2.plot([-raio_arm, raio_arm], [z, z], color='red', lw=0.5)
+
+    ax2.set_xlim(-B_m*1.5, B_m*1.5)
+    ax2.set_ylim(-comp_estaca - 0.5, 0.5)
+    ax2.set_xticks([])
+    ax2.set_ylabel("Profundidade (m)", fontsize=8)
+    ax2.set_title("Perfil da Estaca", fontsize=10)
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+    ax2.spines['bottom'].set_visible(False)
+
+    # --- 3. DIAGRAMA P-M (Opcional) ---
+    if incluir_diagrama_pm:
+        ax3 = fig.add_subplot(gs[2])
+        fcd = (fck / 1.4) * 1000 
+        fyd = (fyk / 1.15) * 1000 
+        N_max_comp = 0.85 * fcd * Area_c + fyd * As
+        N_max_trac = -fyd * As
+        N_bal = 0.35 * N_max_comp 
+        M_bal = 1.35 * M_rd       
+        
+        N_vals = np.linspace(N_max_trac, N_max_comp, 100)
+        M_vals = []
+        for n in N_vals:
+            if n < 0: m = M_rd * (1 - (n/N_max_trac)**2)
+            elif n < N_bal: m = M_rd + (M_bal - M_rd) * ((n/N_bal)**0.65)
+            else: m = M_bal * (1 - ((n - N_bal)/(N_max_comp - N_bal))**1.8)
+            M_vals.append(max(0, m))
+            
+        ax3.plot(M_vals, N_vals, color='#1E3A8A', lw=2, label='Envoltória Resistente')
+        ax3.fill_betweenx(N_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
+        ax3.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante ($S_d$)')
+        ax3.axhline(0, color='black', linewidth=1)
+        ax3.axvline(0, color='black', linewidth=1)
+        ax3.set_xlabel('Momento Fletor (kN.m)')
+        ax3.set_ylabel('Carga Axial (kN)')
+        ax3.set_title('Diagrama de Interação (P-M)', fontsize=10)
+        ax3.legend(fontsize=8)
+        ax3.grid(True, ls='--', alpha=0.5)
+
+    fig.tight_layout()
+    return fig
 
 # TÍTULO PRINCIPAL
 st.title("🏗️ Projeto Integrado de Fundações")
 st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Detalhamento de Armaduras e Diagrama P-M")
 
 # -----------------------------------------------------------------------------
-# COLUNA ESQUERDA
+# COLUNA ESQUERDA: IMPORTAÇÃO E EDIÇÃO
 # -----------------------------------------------------------------------------
 col_esq, col_dir = st.columns([1.2, 2])
 
 with col_esq:
     st.subheader("📥 1. Dados do Furo de Sondagem")
-    
     nome_furo_input = st.text_input("📌 Nome do Furo em Edição:", value=st.session_state.furo_atual_nome)
-    
     st.info("Para contornar os limites gratuitos da IA, experimente o nosso Leitor Offline ou copie e cole os dados diretamente do Excel na tabela!")
     
     st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
@@ -691,7 +671,7 @@ with col_esq:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# COLUNA DIREITA
+# COLUNA DIREITA: RESULTADOS
 # -----------------------------------------------------------------------------
 with col_dir:
     tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", "🔍 Análise Detalhada dos Furos"])
@@ -782,16 +762,14 @@ with col_dir:
         c_det3.metric("Armadura Long.", f"{res_atual['n_barras']} un - {res_atual['L_armadura']:.2f} m")
         c_det4.metric("Qtd. Estribos", f"{res_atual['qtd_estribos']} un")
         
-        col_sec, col_long, col_pm = st.columns([1, 0.8, 1.5])
-        with col_sec:
-            fig_sec = plot_secao_transversal(B, secao, res_atual['n_barras'], bitola, bitola_estribo)
-            st.pyplot(fig_sec)
-        with col_long:
-            fig_long = plot_perfil_longitudinal(B, comprimento_estaca, res_atual['L_armadura'], espacamento_estribo)
-            st.pyplot(fig_long)
-        with col_pm:
-            fig_pm = plot_diagrama_pm(res_atual['M_rd'], fck, fyk, res_atual['Area_c'], res_atual['As_total'], carga_V, res_atual['momento_max_atuante'])
-            st.pyplot(fig_pm)
+        # O novo ecrã agrupado que corrige o redimensionamento elástico do Streamlit
+        fig_estrutural = plot_estrutural_combinado(
+            B, secao, res_atual['n_barras'], bitola, bitola_estribo, 
+            comprimento_estaca, res_atual['L_armadura'], espacamento_estribo, 
+            res_atual['M_rd'], fck, fyk, res_atual['Area_c'], res_atual['As_total'], 
+            carga_V, res_atual['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
+        )
+        st.pyplot(fig_estrutural)
         
         st.markdown("### 📈 Perfis Geotécnicos")
         fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
@@ -895,33 +873,22 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
 
-        fig_sec = plot_secao_transversal(B, secao, res['n_barras'], bitola, bitola_estribo)
-        buf_sec = io.BytesIO()
-        fig_sec.savefig(buf_sec, format='png', dpi=150, bbox_inches='tight')
-        buf_sec.seek(0)
-        plt.close(fig_sec)
+        # Novo painel combinado que impede desproporções
+        fig_estrutural = plot_estrutural_combinado(
+            B, secao, res['n_barras'], bitola, bitola_estribo, 
+            comprimento_estaca, res['L_armadura'], espacamento_estribo, 
+            res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], 
+            carga_V, res['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
+        )
+        buf_est = io.BytesIO()
+        fig_estrutural.savefig(buf_est, format='png', dpi=150, bbox_inches='tight')
+        buf_est.seek(0)
+        plt.close(fig_estrutural)
         
-        fig_long = plot_perfil_longitudinal(B, comprimento_estaca, res['L_armadura'], espacamento_estribo)
-        buf_long = io.BytesIO()
-        fig_long.savefig(buf_long, format='png', dpi=150, bbox_inches='tight')
-        buf_long.seek(0)
-        plt.close(fig_long)
-
-        if incluir_pm:
-            fig_pm = plot_diagrama_pm(res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], carga_V, res['momento_max_atuante'])
-            buf_pm = io.BytesIO()
-            fig_pm.savefig(buf_pm, format='png', dpi=150, bbox_inches='tight')
-            buf_pm.seek(0)
-            plt.close(fig_pm)
-            
-            t_img = Table([[ReportLabImage(buf_sec, width=150, height=150), ReportLabImage(buf_long, width=75, height=150), ReportLabImage(buf_pm, width=150, height=150)]])
-            t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-            story.append(t_img)
-        else:
-            t_img = Table([[ReportLabImage(buf_sec, width=200, height=200), ReportLabImage(buf_long, width=100, height=200)]])
-            t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-            story.append(t_img)
-        
+        largura_img = 500 if incluir_pm else 350
+        t_img = Table([[ReportLabImage(buf_est, width=largura_img, height=150)]])
+        t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
+        story.append(t_img)
         story.append(Spacer(1, 15))
 
         story.append(Paragraph("<b>Equações Analíticas Utilizadas</b>", h2_style))
