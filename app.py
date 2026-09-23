@@ -269,19 +269,16 @@ def plot_perfil_longitudinal(B_m, comp_estaca, L_armadura, espacamento_estribo_c
     cob = 0.05
     raio_arm = B_m/2 - cob
 
-    # Estaca Concreto
     ax.plot([-B_m/2, -B_m/2], [0, -comp_estaca], color='black', lw=1.5)
     ax.plot([B_m/2, B_m/2], [0, -comp_estaca], color='black', lw=1.5)
     ax.plot([-B_m/2, B_m/2], [-comp_estaca, -comp_estaca], color='black', lw=1.5)
     ax.plot([-B_m/2, B_m/2], [0, 0], color='black', lw=1.5)
     ax.fill_betweenx([0, -comp_estaca], -B_m/2, B_m/2, color='#E0E0E0', alpha=0.5)
 
-    # Armadura Longitudinal (Gaiola)
     ax.plot([-raio_arm, -raio_arm], [0, -L_armadura], color='red', lw=2)
     ax.plot([raio_arm, raio_arm], [0, -L_armadura], color='red', lw=2)
     ax.plot([-raio_arm, raio_arm], [-L_armadura, -L_armadura], color='red', lw=2)
 
-    # Estribos Verticais
     esp_m = espacamento_estribo_cm / 100
     z_estribos = np.arange(0, -L_armadura, -esp_m)
     for z in z_estribos:
@@ -469,7 +466,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     As_total = n_barras * area_barra
     V_concreto = Area_c * comprimento_estaca
     
-    # Qtd de estribos e peso total de aço
     qtd_estribos = int(L_armadura_calc / (espacamento_estribo / 100))
     peso_long = As_total * L_armadura_calc * 7850
     peso_estribo = qtd_estribos * (np.pi * (B - 0.10) if secao == "Circular" else 4 * (B - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
@@ -480,7 +476,8 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "Q_adm_aoki": Q_adm_aoki, "Q_adm_dq": Q_adm_dq, "Q_adm_t": Q_adm_t, "Q_adm_media": Q_adm_media,
         "Q_adm_adotada": Q_adm_adotada,
         "kv_global": kv_global, "kh_global": kh_global,
-        "momento_max_atuante": momento_max_atuante, "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
+        "momento_max_atuante": momento_max_atuante, "momento_max_unit": momento_max_unit,
+        "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
         "L_armadura": L_armadura_calc, "n_barras": n_barras, "V_concreto": V_concreto, "peso_aco_total": peso_aco_total,
         "qtd_estribos": qtd_estribos,
         "z_vals": z_vals, "m_flet": m_flet, "y_disp": y_disp, "M_cr": M_cr,
@@ -786,14 +783,12 @@ with col_dir:
         
         st.markdown("### ⚙️ Detalhamento Estrutural e Armaduras")
         
-        # Novas métricas completas com quantitativos exatos da estaca e aço
         c_det1, c_det2, c_det3, c_det4 = st.columns(4)
         c_det1.metric("Vol. Concreto (Estaca)", f"{res_atual['V_concreto']:.2f} m³")
         c_det2.metric("Peso Aço Total", f"{res_atual['peso_aco_total']:.1f} kg")
         c_det3.metric("Armadura Long.", f"{res_atual['n_barras']} un - {res_atual['L_armadura']:.2f} m")
         c_det4.metric("Qtd. Estribos", f"{res_atual['qtd_estribos']} un")
         
-        # Grid para abrigar a Seção, o Perfil Longitudinal e o Diagrama P-M
         col_sec, col_long, col_pm = st.columns([1, 0.8, 1.5])
         with col_sec:
             fig_sec = plot_secao_transversal(B, secao, res_atual['n_barras'], bitola, bitola_estribo)
@@ -973,8 +968,19 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph("<b>Modelo Estrutural e Interação Solo-Estrutura (Winkler):</b>", body_style))
         story.append(Paragraph("• Fator de Rigidez Relativa: λ = [ (K<sub>h</sub> · B) / (4 · E<sub>c</sub> · I<sub>c</sub>) ]<sup>0.25</sup>", eq_style))
         story.append(Paragraph("• Deslocamento Lateral: y(z) = [e<sup>-λz</sup> / (2 E<sub>c</sub> I<sub>c</sub> λ³)] · [H cos(λz) + λ M (cos(λz) + sin(λz))]", eq_style))
+        story.append(Spacer(1, 4))
+        
+        # --- NOVO BLOCO EXCLUSIVO PARA O RESULTADO ESTRUTURAL (MRd e HRd) ---
+        story.append(Paragraph("<b>Capacidade Estrutural da Seção (Armadura):</b>", body_style))
+        z_val = 0.75 * B if secao == "Circular" else 0.80 * B
+        z_str = "0.75 B" if secao == "Circular" else "0.80 B"
+        story.append(Paragraph(f"• Momento Resistente: M<sub>Rd</sub> = A<sub>s,tot</sub> · f<sub>yd</sub> · z   |   (Braço de alavanca z ≈ {z_str})", eq_style))
+        story.append(Paragraph(f"  <i>M<sub>Rd</sub> = {res['As_total']:.6f} m² · ({fyk}/1.15)·10³ kPa · {z_val:.3f} m = <b>{res['M_rd']:.1f} kN.m</b></i>", eq_style))
+        story.append(Paragraph(f"• Força Horizontal Máx: H<sub>Rd</sub> = M<sub>Rd</sub> / M<sub>max,unit</sub>", eq_style))
+        story.append(Paragraph(f"  <i>H<sub>Rd</sub> = {res['M_rd']:.1f} kN.m / {res['momento_max_unit']:.4f} m = <b>{res['H_rd']:.1f} kN</b></i>", eq_style))
+        story.append(Spacer(1, 4))
 
-        txt_legenda = "<i><u>Nomenclatura:</u> <b>A<sub>c</sub></b> = Área da Seção; <b>U</b> = Perímetro; <b>Δz</b> = Incremento de profundidade; <b>N<sub>SPT</sub></b> = Índice de penetração; <b>K, C, α, β</b> = Parâmetros do solo; <b>H</b> = Força Horizontal; <b>M</b> = Momento Fletor.</i>"
+        txt_legenda = "<i><u>Nomenclatura:</u> <b>A<sub>c</sub></b> = Área da Seção; <b>U</b> = Perímetro; <b>Δz</b> = Incremento de profundidade; <b>N<sub>SPT</sub></b> = Índice de penetração; <b>K, C, α, β</b> = Parâmetros do solo; <b>H</b> = Força Horizontal; <b>M</b> = Momento Fletor; <b>M<sub>max,unit</sub></b> = Momento gerado por força horizontal unitária de 1kN.</i>"
         story.append(Paragraph(txt_legenda, legenda_style))
         
         # Tabela Detalhada com Kh e Kv
