@@ -178,20 +178,23 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# NOVO: MOTOR DE EXPORTAÇÃO BIM (.IFC) CORRIGIDO
+# NOVO: MOTOR DE EXPORTAÇÃO BIM (.IFC) CORRIGIDO (API Recente)
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
     model = ifcopenshell.file()
     
-    # Criar Projeto e Contextos (Removida a exigência estrita de unidades)
+    # Criar Projeto e Contextos
     project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
     context = run("context.add_context", model, context_type="Model")
     body = run("context.add_context", model, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context)
     
     site = run("root.create_entity", model, ifc_class="IfcSite", name="Terreno")
-    run("aggregate.assign_object", model, relating_object=project, related_object=site)
+    # CORREÇÃO AQUI: Usar products=[site] em vez de related_object
+    run("aggregate.assign_object", model, relating_object=project, products=[site])
+    
     building = run("root.create_entity", model, ifc_class="IfcBuilding", name="Fundações Profundas")
-    run("aggregate.assign_object", model, relating_object=site, related_object=building)
+    # CORREÇÃO AQUI: Usar products=[building] em vez de related_object
+    run("aggregate.assign_object", model, relating_object=site, products=[building])
     
     for idx, row in df_projeto.iterrows():
         diam = row.get('Diametro_m', 0.5)
@@ -211,7 +214,9 @@ def gerar_modelo_ifc(df_projeto):
             
             nome_estaca = f"Estaca_{row['Pilar']}" if ne == 1 else f"Estaca_{row['Pilar']}_{i+1}"
             pile = run("root.create_entity", model, ifc_class="IfcPile", name=nome_estaca)
-            run("spatial.assign_container", model, relating_structure=building, related_element=pile)
+            
+            # CORREÇÃO AQUI: Usar products=[pile] em vez de related_element
+            run("spatial.assign_container", model, relating_structure=building, products=[pile])
             
             # Geometria
             pt = model.createIfcCartesianPoint((0.0, 0.0))
