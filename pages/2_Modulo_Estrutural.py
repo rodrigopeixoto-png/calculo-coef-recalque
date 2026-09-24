@@ -8,9 +8,9 @@ import tempfile
 import os
 import json
 
-# Importações para o PDF
+# Importações para o PDF Profissional
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -53,7 +53,6 @@ PARAMETROS_SOLO = {
 def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
 def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-# CÁLCULO ATUALIZADO COM RADAR DE BULBO DE TENSÕES
 def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
@@ -93,7 +92,6 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
         if verificar_bulbo:
             fator_grupo = np.sqrt(ne) if ne > 1 else 1.0
             zona_influencia_m = max(3.0, 3.0 * diametro_m * fator_grupo)
-            
             for idx in df_suficiente.index:
                 prof_teste = df_spt.loc[idx, "Profundidade (m)"]
                 spt_ponta = df_spt.loc[idx, "N_SPT"]
@@ -185,7 +183,6 @@ def extrair_tabela_do_dxf(dxf_bytes):
     linhas_dados = []
     for _, p in pilares.iterrows():
         linha_textos = df_raw[abs(df_raw['Y'] - p['Y']) <= tolerancia_y].copy()
-        
         def pega_valor(chave):
             x_alvo = headers_x[chave]
             if x_alvo is None or len(linha_textos) == 0: return None
@@ -286,9 +283,46 @@ def gerar_modelo_ifc(df_projeto):
     return model.to_string()
 
 # -----------------------------------------------------------------------------
-# MOTOR DE GERAÇÃO DO MEMORIAL (PDF) ESTRUTURAL
+# NOVO: MOTOR DE GERAÇÃO DO MEMORIAL (PDF) PILAR A PILAR
 # -----------------------------------------------------------------------------
-def gerar_memorial_estrutural_pdf(df_projeto, config_global, fck, criterio, prof_minima, verificar_bulbo):
+def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo):
+    # Recalcula rapidamente para extrair os valores exatos na cota de assentamento do pilar
+    df_spt = df_spt_raw.copy()
+    df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
+    df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
+    df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
+    df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
+    
+    Area_c = (np.pi * diametro_m**2) / 4 
+    Perimetro = np.pi * diametro_m 
+    f1, f2, alfa_dq, beta_dq, beta_t = 2.0, 4.0, 0.3, 1.0, 6.0 
+
+    def proc_solo_aoki(row):
+        solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
+        rl = (solo["aoki_alpha"] * solo["aoki_K"] * row["N_corr"]) / f2
+        rp = (solo["aoki_K"] * row["N_corr"]) / f1 * Area_c
+        return pd.Series([rl * Perimetro * 1.0, rp])
+
+    df_spt[["delta_Rl_aoki", "Rp_aoki"]] = df_spt.apply(proc_solo_aoki, axis=1)
+    df_spt["Rc Aoki"] = (df_spt["Rp_aoki"] + df_spt["delta_Rl_aoki"].cumsum()) / 2.0
+    
+    df_spt["N_dq"] = df_spt["N_corr"].apply(lambda x: max(3, min(x, 50)))
+    df_spt["C_dq"] = df_spt["Tipo de Solo"].apply(get_dq_c)
+    df_spt["Rc DQ"] = ((alfa_dq * df_spt["C_dq"] * df_spt["N_corr"] * Area_c) + (beta_dq * 10 * ((df_spt["N_dq"] / 3) + 1) * Perimetro).cumsum()) / 2.0
+    
+    df_spt["alpha_teix"] = df_spt["Tipo de Solo"].apply(get_teix_alpha)
+    df_spt["Rc Teix"] = ((df_spt["alpha_teix"] * df_spt["N_corr"] * Area_c) + (beta_t * df_spt["N_corr"] * Perimetro).cumsum()) / 2.0
+
+    df_spt["Rc Média"] = (df_spt["Rc Aoki"] + df_spt["Rc DQ"] + df_spt["Rc Teix"]) / 3.0
+    df_spt["Rc Menor"] = df_spt[["Rc Aoki", "Rc DQ", "Rc Teix"]].min(axis=1)
+
+    # Busca a linha exata da profundidade adotada (ou a mais próxima)
+    linha = df_spt[df_spt["Profundidade (m)"] >= prof_alvo].head(1)
+    if len(linha) > 0:
+        return linha.iloc[0]
+    return df_spt.iloc[-1]
+
+def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, criterio, prof_minima, verificar_bulbo):
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     story, styles = [], getSampleStyleSheet()
@@ -296,19 +330,22 @@ def gerar_memorial_estrutural_pdf(df_projeto, config_global, fck, criterio, prof
     title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=15, leading=18, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
     h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
     body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=13)
+    pilar_title = ParagraphStyle('PilarTitle', parent=styles['Heading3'], fontSize=11, leading=14, textColor=colors.white)
 
     story.append(Paragraph("<b>MEMORIAL DE CÁLCULO ESTRUTURAL - FUNDAÇÕES PROFUNDAS</b>", title_style))
-    story.append(Paragraph("<b>Integração Geotécnica-BIM (Dimensionamento por Bloco/Pilar)</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
+    story.append(Paragraph("<b>Dimensionamento Detalhado e Geotécnico (Pilar a Pilar)</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
     story.append(Spacer(1, 15))
 
+    # --- 1. PARÂMETROS E CRITÉRIOS ---
     story.append(Paragraph("<b>1. Parâmetros e Critérios Adotados</b>", h2_style))
-    txt_param = f"• <b>Classe do Concreto:</b> C{fck}<br/>"
-    txt_param += f"• <b>Critério Geotécnico de Resistência Adotado:</b> {criterio}<br/>"
+    txt_param = f"• <b>Classe do Concreto Adotada:</b> C{fck}<br/>"
+    txt_param += f"• <b>Critério Geotécnico de Resistência:</b> {criterio}<br/>"
     txt_param += f"• <b>Profundidade Mínima Fixada:</b> {prof_minima} m<br/>"
     txt_param += f"• <b>Verificação da Zona de Influência (Bulbo de Tensões):</b> {'Ativada (Evita assentamento sobre camadas moles subjacentes)' if verificar_bulbo else 'Desativada'}<br/>"
     story.append(Paragraph(txt_param, body_style))
     story.append(Spacer(1, 10))
 
+    # --- 2. RESUMO GLOBAL ---
     total_blocos = len(df_projeto)
     total_estacas = df_projeto["ne"].sum()
     total_metros = df_projeto["Metros_Perfurados"].sum()
@@ -316,48 +353,83 @@ def gerar_memorial_estrutural_pdf(df_projeto, config_global, fck, criterio, prof
     aco_total = df_projeto["Peso_Aco_kg"].sum()
 
     story.append(Paragraph("<b>2. Resumo Executivo Quantitativo</b>", h2_style))
-    txt_res = f"• <b>Total de Blocos/Pilares Dimensionados:</b> {total_blocos} un<br/>"
+    txt_res = f"• <b>Total de Blocos Dimensionados:</b> {total_blocos} un<br/>"
     txt_res += f"• <b>Quantidade Total de Estacas:</b> {total_estacas:.0f} un<br/>"
-    txt_res += f"• <b>Comprimento Total de Perfuração Necessário:</b> {total_metros:.1f} m<br/>"
-    txt_res += f"• <b>Volume Total de Concreto (Teórico):</b> {vol_total:.1f} m³<br/>"
+    txt_res += f"• <b>Comprimento Total de Perfuração:</b> {total_metros:.1f} m<br/>"
+    txt_res += f"• <b>Volume Total de Concreto Projetado:</b> {vol_total:.1f} m³<br/>"
     txt_res += f"• <b>Peso Total de Aço Armado:</b> {aco_total:.1f} kg<br/>"
     story.append(Paragraph(txt_res, body_style))
     story.append(Spacer(1, 15))
 
-    story.append(Paragraph("<b>3. Dimensionamento Detalhado por Pilar (Bloco)</b>", h2_style))
-    data_tab = [["Pilar", "Carga(tf)", "Est.", "Ø(m)", "Carga/Est.(kN)", "Prof.(m)", "Armadura Long.", "Vol. Concr.(m³)"]]
-    for idx, row in df_projeto.iterrows():
-        data_tab.append([
-            str(row['Pilar']), 
-            f"{row['Carga_Max_tf']:.1f}", 
-            f"{row['ne']:.0f}", 
-            f"{row['Diametro_m']:.2f}",
-            f"{row['Carga_por_Estaca_kN']:.1f}",
-            f"{row['Profundidade_m']:.1f}",
-            str(row['Armadura_Principal']),
-            f"{row['Vol_Concreto_m3']:.2f}"
-        ])
-        
-    t_m = Table(data_tab, colWidths=[40, 50, 25, 35, 75, 45, 175, 75], repeatRows=1)
-    t_m.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), 
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white), 
-        ('GRID', (0,0), (-1,-1), 0.5, colors.grey), 
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('FONTSIZE', (0,0), (-1,-1), 8),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
-        ('TOPPADDING', (0,0), (-1,-1), 4)
-    ]))
-    story.append(t_m)
     story.append(PageBreak())
 
-    story.append(Paragraph("<b>4. Metodologia de Cálculo e Considerações</b>", h2_style))
-    txt_metodo = """O presente memorial detalha o dimensionamento executivo das fundações profundas de acordo com as cargas verticais extraídas da planta estrutural (AutoCAD / Eberick / Compatível).<br/><br/>
-    <b>Interação Geotécnica-Estrutural:</b> A profundidade de cada estaca foi calculada individualmente, "descendo" virtualmente o perfil do ensaio SPT (Standard Penetration Test) fornecido pelo Módulo Geotécnico da plataforma. A capacidade de carga foi definida pelo critério escolhido, cruzando os métodos empíricos e semi-empíricos consagrados (Aoki-Velloso, Décourt-Quaresma e Teixeira).<br/><br/>
-    <b>Verificação do Bulbo de Tensões:</b> Quando ativada, a verificação de grupo analisa a sobreposição dos bulbos de tensões na ponta das estacas de um bloco (profundidade mínima de inspeção de 3 diâmetros, ou majorada pelo fator de grupo √n). Caso o solo apresente queda de resistência acentuada na camada inferior sondada (N_SPT ≤ 3 ou perda de 50% da resistência de ponta), o comprimento da estaca é majorado por segurança para ancorar em extrato resistente.<br/><br/>
-    <b>Armaduras e Concreto:</b> A taxa de armadura foi definida para cobrir os esforços longitudinais, sendo calculadas bitolas principais e de cisalhamento (estribos) em função do comprimento necessário de interação (Gaiola Parcial ou Total). O volume de concreto apresentado reflete a escavação teórica exata do elemento cilíndrico (sem contemplar sobreconsumos construtivos)."""
-    story.append(Paragraph(txt_metodo, body_style))
+    # --- 3. MEMÓRIA DE CÁLCULO PILAR A PILAR ---
+    story.append(Paragraph("<b>3. Memória de Cálculo Detalhada (Pilar a Pilar)</b>", h2_style))
+    story.append(Spacer(1, 10))
+
+    for idx, row in df_projeto.iterrows():
+        pilar_elements = [] # Agrupa os elementos deste pilar para não quebrar na página
+        
+        nome_pilar = str(row['Pilar'])
+        ne = int(row['ne'])
+        diam = row['Diametro_m']
+        carga_tot = row['Carga_Max_tf']
+        carga_est = row['Carga_por_Estaca_kN']
+        prof = row['Profundidade_m']
+        
+        # Avalia a capacidade exata na cota onde a estaca parou
+        if df_spt_atual is not None:
+            cota_info = obter_capacidades_na_cota(df_spt_atual, diam, prof)
+            solo_tipo = cota_info["Tipo de Solo"]
+            nspt = cota_info["N_SPT"]
+            rc_aoki = cota_info["Rc Aoki"]
+            rc_dq = cota_info["Rc DQ"]
+            rc_tx = cota_info["Rc Teix"]
+            rc_adotada = cota_info["Rc Média"] if criterio == "Média dos Métodos" else (cota_info["Rc Menor"] if criterio == "Menor Valor (Mais Conservador)" else (cota_info["Rc Aoki"] if "Aoki" in criterio else (cota_info["Rc DQ"] if "Décourt" in criterio else cota_info["Rc Teix"])))
+        else:
+            solo_tipo, nspt, rc_aoki, rc_dq, rc_tx, rc_adotada = "Desconhecido", 0, 0, 0, 0, 0
+            
+        # Cria a Tabela do Pilar
+        t_header = Table([[Paragraph(f"<b>BLOCO DO PILAR {nome_pilar}</b> | {ne} Estaca(s) de Ø {diam*100:.0f} cm", pilar_title)]], colWidths=[540])
+        t_header.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#1E3A8A')), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
+        pilar_elements.append(t_header)
+
+        # Corpo dos Dados
+        dados_pilar = f"""<b>1. Esforços e Geometria</b><br/>
+        Carga Total do Bloco (Catálogo): {carga_tot:.1f} tf<br/>
+        Carga de Cálculo por Estaca (S_d): <b>{carga_est:.1f} kN</b><br/>
+        Profundidade Adotada: <b>{prof:.1f} m</b> (Limitador Mínimo: {prof_minima}m)<br/><br/>
+        """
+        
+        if df_spt_atual is not None:
+            dados_pilar += f"""<b>2. Verificação Geotécnica na Cota de Assentamento (Z = {prof:.1f}m)</b><br/>
+            Tipo de Solo na Ponta: {solo_tipo} (N_SPT = {nspt:.0f})<br/>
+            Rc Aoki-Velloso: {rc_aoki:.1f} kN | Rc Décourt-Quaresma: {rc_dq:.1f} kN | Rc Teixeira: {rc_tx:.1f} kN<br/>
+            Capacidade Resistente Adotada (R_c): <font color='green'><b>{rc_adotada:.1f} kN</b></font> (Situação: {'OK' if rc_adotada >= carga_est else 'Cravado na Prof. Mínima'})<br/><br/>
+            """
+        else:
+            dados_pilar += "<b>2. Verificação Geotécnica</b><br/>Terreno não importado. Assumida profundidade teórica mínima.<br/><br/>"
+
+        dados_pilar += f"""<b>3. Detalhamento Estrutural e Quantitativos (Por Estaca)</b><br/>
+        Armadura Longitudinal: {row['Armadura_Principal']}<br/>
+        Volume de Concreto (por estaca): {(row['Vol_Concreto_m3'] / ne):.2f} m³<br/>
+        Peso de Aço Total (por estaca): {(row['Peso_Aco_kg'] / ne):.1f} kg<br/><br/>
+        <b>TOTAIS DO BLOCO {nome_pilar}:</b> Concreto = {row['Vol_Concreto_m3']:.2f} m³ | Aço = {row['Peso_Aco_kg']:.1f} kg
+        """
+
+        t_body = Table([[Paragraph(dados_pilar, body_style)]], colWidths=[540])
+        t_body.setStyle(TableStyle([
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#1E3A8A')),
+            ('TOPPADDING', (0,0), (-1,-1), 10),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ('LEFTPADDING', (0,0), (-1,-1), 10),
+            ('RIGHTPADDING', (0,0), (-1,-1), 10),
+        ]))
+        pilar_elements.append(t_body)
+        pilar_elements.append(Spacer(1, 15))
+        
+        # Junta o Cabeçalho e o Corpo do Pilar para não separarem de página
+        story.append(KeepTogether(pilar_elements))
 
     doc.build(story)
     pdf_buffer.seek(0)
@@ -568,7 +640,7 @@ if st.session_state.df_projeto is not None:
 
         with col_btn2:
             try:
-                pdf_estrutural = gerar_memorial_estrutural_pdf(df, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo)
+                pdf_estrutural = gerar_memorial_estrutural_pdf(df, df_spt_atual, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo)
                 st.download_button(
                     label="📄 Baixar Memorial Estrutural (PDF)",
                     data=pdf_estrutural,
