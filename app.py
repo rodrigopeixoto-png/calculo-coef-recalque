@@ -186,6 +186,10 @@ st.sidebar.info("Guarde o seu trabalho para continuar mais tarde.")
 
 json_projeto = exportar_projeto_json()
 nome_arquivo_utea = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20] if nome_obra else "Projeto"
+
+# A INTEGRAÇÃO ACONTECE AQUI: Guardar na memória partilhada do Streamlit
+st.session_state['projeto_geotecnico'] = json.loads(json_projeto)
+
 st.sidebar.download_button(
     label="⬇️ Guardar Projeto (.utea)",
     data=json_projeto,
@@ -200,13 +204,15 @@ if upload_proj is not None:
         json_lido = upload_proj.read().decode('utf-8')
         sucesso = carregar_projeto_json(json_lido)
         if sucesso:
+            # Atualiza a memória partilhada após upload
+            st.session_state['projeto_geotecnico'] = json.loads(exportar_projeto_json())
             st.sidebar.success("Projeto carregado com sucesso!")
             st.rerun()
         else:
             st.sidebar.error("Erro ao carregar o arquivo. Formato inválido.")
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE DESENHO
+# FUNÇÕES DE DESENHO E RESTO DO CÓDIGO INALTERADO...
 # -----------------------------------------------------------------------------
 def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
     fig, ax = plt.subplots(figsize=(4, 4))
@@ -285,7 +291,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
     N_max_comp = 0.85 * fcd * Area_c + fyd * As
     N_max_trac = -fyd * As
     N_bal = 0.35 * N_max_comp 
-    M_bal = 1.35 * M_rd       
+    M_bal = 1.35 * M_rd        
     
     N_vals = np.linspace(N_max_trac, N_max_comp, 100)
     M_vals = []
@@ -314,9 +320,6 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
     ax.grid(True, ls='--', alpha=0.5)
     return fig
 
-# -----------------------------------------------------------------------------
-# FUNÇÃO NÚCLEO DE CÁLCULO
-# -----------------------------------------------------------------------------
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
@@ -442,9 +445,8 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
 
-    # Cálculo da Armadura Tracionada e do Braço de Alavanca Real
     As_total = n_barras * area_barra
-    As_tracao = As_total / 2.0  # Metade do aço trabalha à tração
+    As_tracao = As_total / 2.0  
     z_real = 0.70 * B if secao == "Circular" else 0.80 * B
     
     M_rd = As_tracao * ((fyk / 1.15) * 1000) * z_real
@@ -543,7 +545,7 @@ def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_
         N_max_comp = 0.85 * fcd * Area_c + fyd * As
         N_max_trac = -fyd * As
         N_bal = 0.35 * N_max_comp 
-        M_bal = 1.35 * M_rd       
+        M_bal = 1.35 * M_rd        
         
         N_vals = np.linspace(N_max_trac, N_max_comp, 100)
         M_vals = []
@@ -735,7 +737,9 @@ with col_esq:
             "img": st.session_state.furo_atual_img
         }
         st.session_state.furo_atual_nome = nome_furo_input
-        st.success(f"Furo {nome_furo_input} guardado e adicionado ao projeto!")
+        # Atualiza a memória partilhada após guardar furo
+        st.session_state['projeto_geotecnico'] = json.loads(exportar_projeto_json())
+        st.success(f"Furo {nome_furo_input} guardado e sincronizado com o módulo BIM!")
     
     st.markdown("---")
     st.subheader("🗺️ 2. Adicionar Croqui de Locação")
@@ -773,6 +777,7 @@ with col_esq:
     if len(st.session_state.projeto_furos) > 0:
         if st.button("🗑️ Limpar Todos os Furos Salvos", width="stretch"):
             st.session_state.projeto_furos = {}
+            st.session_state['projeto_geotecnico'] = None
             st.rerun()
 
 # -----------------------------------------------------------------------------
@@ -1024,7 +1029,6 @@ def gerar_pdf_multiprojeto():
         story.append(Paragraph("• Deslocamento Lateral: y(z) = [e<sup>-λz</sup> / (2 E<sub>c</sub> I<sub>c</sub> λ³)] x [H cos(λz) + λ M (cos(λz) + sin(λz))]", eq_style))
         story.append(Spacer(1, 4))
         
-        # --- APRESENTAÇÃO CORRIGIDA DO CÁLCULO ESTRUTURAL ---
         story.append(Paragraph("<b>Capacidade Estrutural da Seção (Armadura):</b>", body_style))
         z_str = "0.70 B" if secao == "Circular" else "0.80 B"
         z_real = res['z_real']
