@@ -8,6 +8,12 @@ import tempfile
 import os
 import json
 
+# Importações para o PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
 try:
     import ezdxf
 except ImportError:
@@ -78,44 +84,34 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     df_spt["Rc Média"] = (df_spt["Rc Aoki"] + df_spt["Rc DQ"] + df_spt["Rc Teix"]) / 3.0
     df_spt["Rc Menor"] = df_spt[["Rc Aoki", "Rc DQ", "Rc Teix"]].min(axis=1)
 
-    col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
+    col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor (Mais Conservador)" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
 
-    # Filtra todas as profundidades onde a capacidade já foi atingida
     df_suficiente = df_spt[df_spt[col_adotada] >= carga_alvo_kn]
     
     prof_calc = None
-    
     if len(df_suficiente) > 0:
         if verificar_bulbo:
-            # Raio de Influência do Bulbo de Tensões
             fator_grupo = np.sqrt(ne) if ne > 1 else 1.0
             zona_influencia_m = max(3.0, 3.0 * diametro_m * fator_grupo)
             
             for idx in df_suficiente.index:
                 prof_teste = df_spt.loc[idx, "Profundidade (m)"]
                 spt_ponta = df_spt.loc[idx, "N_SPT"]
-                
-                # Inspeciona o que está debaixo da ponta (O Radar do Bulbo)
                 camadas_abaixo = df_spt[(df_spt["Profundidade (m)"] > prof_teste) & 
                                         (df_spt["Profundidade (m)"] <= prof_teste + zona_influencia_m)]
                 
                 solo_seguro = True
                 if len(camadas_abaixo) > 0:
                     spt_minimo_abaixo = camadas_abaixo["N_SPT"].min()
-                    # Critério de Rejeição: Solo fraco ou queda de 50% de resistência no SPT
                     if spt_minimo_abaixo <= 3 or spt_minimo_abaixo < (spt_ponta * 0.5):
                         solo_seguro = False
                         
-                # Se for seguro, adota esta profundidade e para de procurar!
                 if solo_seguro:
                     prof_calc = prof_teste
                     break
             
-            # Se o loop terminou e não achou solo seguro, desce até ao máximo do furo
-            if prof_calc is None:
-                prof_calc = df_spt["Profundidade (m)"].max()
+            if prof_calc is None: prof_calc = df_spt["Profundidade (m)"].max()
         else:
-            # Sem radar, assume a primeira profundidade encontrada
             prof_calc = df_suficiente.iloc[0]["Profundidade (m)"]
     else:
         prof_calc = df_spt["Profundidade (m)"].max()
@@ -129,7 +125,6 @@ def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bit
     As_total = n_barras * area_barra
     
     L_arm = prof_m if l_manual is None else min(l_manual, prof_m)
-    
     peso_long = As_total * L_arm * 7850
     qtd_estribos = int(L_arm / (espacamento / 100))
     peso_estribo = qtd_estribos * (np.pi * (diametro_m - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
@@ -244,8 +239,7 @@ def gerar_modelo_ifc(df_projeto):
         vol_concreto_estaca = row.get('Vol_Concreto_m3', 0) / ne
         
         for i in range(ne):
-            if ne == 1:
-                dx, dy = 0.0, 0.0
+            if ne == 1: dx, dy = 0.0, 0.0
             else:
                 raio_distribuicao = 1.5 * diam 
                 angle = i * (2 * np.pi / ne)
@@ -254,7 +248,6 @@ def gerar_modelo_ifc(df_projeto):
             
             nome_estaca = f"Estaca_{row['Pilar']}" if ne == 1 else f"Estaca_{row['Pilar']}_{i+1}"
             pile = run("root.create_entity", model, ifc_class="IfcPile", name=nome_estaca)
-            
             run("spatial.assign_container", model, relating_structure=building, products=[pile])
             
             pt = model.createIfcCartesianPoint((0.0, 0.0))
@@ -280,22 +273,95 @@ def gerar_modelo_ifc(df_projeto):
             try:
                 pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
                 run("pset.edit_pset", model, pset=pset, properties={
-                    "Reference": str(row['Pilar']),
-                    "LoadBearing": True,
+                    "Reference": str(row['Pilar']), "LoadBearing": True,
                     "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
                     "Volume_Concreto_m3": float(vol_concreto_estaca),
-                    "Classe_Resistencia_Concreto": f"C{int(fck_val)}",
-                    "Diametro_Estaca_m": float(diam),
+                    "Classe_Resistencia_Concreto": f"C{int(fck_val)}", "Diametro_Estaca_m": float(diam),
                     "Armadura_Descricao": str(row.get('Armadura_Principal', 'N/A')),
                     "Peso_Aco_Total_kg": float(peso_l_estaca + peso_e_estaca),
                     f"Peso_Aco_Longitudinal_{bitola_l}mm_kg": float(peso_l_estaca),
                     f"Peso_Aco_Estribo_{bitola_e}mm_kg": float(peso_e_estaca)
                 })
-            except Exception:
-                pass 
-                
+            except Exception: pass 
     return model.to_string()
 
+# -----------------------------------------------------------------------------
+# MOTOR DE GERAÇÃO DO MEMORIAL (PDF) ESTRUTURAL
+# -----------------------------------------------------------------------------
+def gerar_memorial_estrutural_pdf(df_projeto, config_global, fck, criterio, prof_minima, verificar_bulbo):
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story, styles = [], getSampleStyleSheet()
+
+    title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=15, leading=18, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
+    h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
+    body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=13)
+
+    story.append(Paragraph("<b>MEMORIAL DE CÁLCULO ESTRUTURAL - FUNDAÇÕES PROFUNDAS</b>", title_style))
+    story.append(Paragraph("<b>Integração Geotécnica-BIM (Dimensionamento por Bloco/Pilar)</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
+    story.append(Spacer(1, 15))
+
+    story.append(Paragraph("<b>1. Parâmetros e Critérios Adotados</b>", h2_style))
+    txt_param = f"• <b>Classe do Concreto:</b> C{fck}<br/>"
+    txt_param += f"• <b>Critério Geotécnico de Resistência Adotado:</b> {criterio}<br/>"
+    txt_param += f"• <b>Profundidade Mínima Fixada:</b> {prof_minima} m<br/>"
+    txt_param += f"• <b>Verificação da Zona de Influência (Bulbo de Tensões):</b> {'Ativada (Evita assentamento sobre camadas moles subjacentes)' if verificar_bulbo else 'Desativada'}<br/>"
+    story.append(Paragraph(txt_param, body_style))
+    story.append(Spacer(1, 10))
+
+    total_blocos = len(df_projeto)
+    total_estacas = df_projeto["ne"].sum()
+    total_metros = df_projeto["Metros_Perfurados"].sum()
+    vol_total = df_projeto["Vol_Concreto_m3"].sum()
+    aco_total = df_projeto["Peso_Aco_kg"].sum()
+
+    story.append(Paragraph("<b>2. Resumo Executivo Quantitativo</b>", h2_style))
+    txt_res = f"• <b>Total de Blocos/Pilares Dimensionados:</b> {total_blocos} un<br/>"
+    txt_res += f"• <b>Quantidade Total de Estacas:</b> {total_estacas:.0f} un<br/>"
+    txt_res += f"• <b>Comprimento Total de Perfuração Necessário:</b> {total_metros:.1f} m<br/>"
+    txt_res += f"• <b>Volume Total de Concreto (Teórico):</b> {vol_total:.1f} m³<br/>"
+    txt_res += f"• <b>Peso Total de Aço Armado:</b> {aco_total:.1f} kg<br/>"
+    story.append(Paragraph(txt_res, body_style))
+    story.append(Spacer(1, 15))
+
+    story.append(Paragraph("<b>3. Dimensionamento Detalhado por Pilar (Bloco)</b>", h2_style))
+    data_tab = [["Pilar", "Carga(tf)", "Est.", "Ø(m)", "Carga/Est.(kN)", "Prof.(m)", "Armadura Long.", "Vol. Concr.(m³)"]]
+    for idx, row in df_projeto.iterrows():
+        data_tab.append([
+            str(row['Pilar']), 
+            f"{row['Carga_Max_tf']:.1f}", 
+            f"{row['ne']:.0f}", 
+            f"{row['Diametro_m']:.2f}",
+            f"{row['Carga_por_Estaca_kN']:.1f}",
+            f"{row['Profundidade_m']:.1f}",
+            str(row['Armadura_Principal']),
+            f"{row['Vol_Concreto_m3']:.2f}"
+        ])
+        
+    t_m = Table(data_tab, colWidths=[40, 50, 25, 35, 75, 45, 175, 75], repeatRows=1)
+    t_m.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), 
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white), 
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey), 
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('TOPPADDING', (0,0), (-1,-1), 4)
+    ]))
+    story.append(t_m)
+    story.append(PageBreak())
+
+    story.append(Paragraph("<b>4. Metodologia de Cálculo e Considerações</b>", h2_style))
+    txt_metodo = """O presente memorial detalha o dimensionamento executivo das fundações profundas de acordo com as cargas verticais extraídas da planta estrutural (AutoCAD / Eberick / Compatível).<br/><br/>
+    <b>Interação Geotécnica-Estrutural:</b> A profundidade de cada estaca foi calculada individualmente, "descendo" virtualmente o perfil do ensaio SPT (Standard Penetration Test) fornecido pelo Módulo Geotécnico da plataforma. A capacidade de carga foi definida pelo critério escolhido, cruzando os métodos empíricos e semi-empíricos consagrados (Aoki-Velloso, Décourt-Quaresma e Teixeira).<br/><br/>
+    <b>Verificação do Bulbo de Tensões:</b> Quando ativada, a verificação de grupo analisa a sobreposição dos bulbos de tensões na ponta das estacas de um bloco (profundidade mínima de inspeção de 3 diâmetros, ou majorada pelo fator de grupo √n). Caso o solo apresente queda de resistência acentuada na camada inferior sondada (N_SPT ≤ 3 ou perda de 50% da resistência de ponta), o comprimento da estaca é majorado por segurança para ancorar em extrato resistente.<br/><br/>
+    <b>Armaduras e Concreto:</b> A taxa de armadura foi definida para cobrir os esforços longitudinais, sendo calculadas bitolas principais e de cisalhamento (estribos) em função do comprimento necessário de interação (Gaiola Parcial ou Total). O volume de concreto apresentado reflete a escavação teórica exata do elemento cilíndrico (sem contemplar sobreconsumos construtivos)."""
+    story.append(Paragraph(txt_metodo, body_style))
+
+    doc.build(story)
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 # -----------------------------------------------------------------------------
 # INTERFACE PRINCIPAL E BARRA LATERAL
@@ -310,7 +376,6 @@ furo_selecionado = None
 criterio_selecionado = "Média dos Métodos"
 conteudo_utea = None
 
-# SINCRONIZAÇÃO AUTOMÁTICA
 if 'projeto_geotecnico' in st.session_state and st.session_state['projeto_geotecnico'] is not None:
     st.sidebar.success("🔗 Terreno sincronizado automaticamente do Módulo Geotécnico!")
     conteudo_utea = st.session_state['projeto_geotecnico']
@@ -320,6 +385,8 @@ else:
     if arquivo_utea is not None:
         conteudo_utea = json.loads(arquivo_utea.read().decode('utf-8'))
 
+config_memoria = st.session_state.get('params_globais', {})
+
 if conteudo_utea is not None:
     try:
         for nome, info in conteudo_utea.get("furos", {}).items():
@@ -327,7 +394,10 @@ if conteudo_utea is not None:
         
         if dados_terreno:
             furo_selecionado = st.sidebar.selectbox("Furo Base para Cálculo:", list(dados_terreno.keys()))
-            criterio_selecionado = st.sidebar.selectbox("Critério Geotécnico:", ["Média dos Métodos", "Menor Valor", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"])
+            opts_crit = ["Média dos Métodos", "Menor Valor (Mais Conservador)", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"]
+            def_crit = config_memoria.get("criterio_q_adm", "Média dos Métodos")
+            idx_crit = opts_crit.index(def_crit) if def_crit in opts_crit else 0
+            criterio_selecionado = st.sidebar.selectbox("Critério Geotécnico:", opts_crit, index=idx_crit)
     except Exception as e:
         st.sidebar.error(f"Erro ao ler os dados do terreno: {e}")
 
@@ -338,15 +408,10 @@ arquivo_upload = st.sidebar.file_uploader("Planta do Eberick (.dxf, .xlsx)", typ
 st.sidebar.markdown("---")
 st.sidebar.header("3️⃣ Configuração Estrutural e Materiais")
 
-# Puxa a memória global do módulo geotécnico
-config_memoria = st.session_state.get('params_globais', {})
-if config_memoria:
-    st.sidebar.success("✅ Materiais e Armaduras sincronizados!")
+if config_memoria: st.sidebar.success("✅ Materiais e Armaduras sincronizados!")
 
-# NOVO CONTROLO: O RADAR DO BULBO DE TENSÕES
-verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True, help="O algoritmo não pára logo na primeira profundidade viável. Ele varre as camadas subjacentes e caso encontre solo fraco, desce a estaca para ancorar em solo firme.")
+verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True, help="Varre camadas subjacentes para evitar que a estaca pare sobre solos moles.")
 
-# Valores padrão com Fallback (Se existir na memória, usa; se não, usa o padrão)
 def_fck = int(config_memoria.get("fck", 25))
 def_taxa = float(config_memoria.get("taxa_armadura", 0.5))
 def_bitola = float(config_memoria.get("bitola", 10.0))
@@ -359,7 +424,6 @@ idx_fck = opts_fck.index(def_fck) if def_fck in opts_fck else 1
 fck_concreto = st.sidebar.selectbox("Classe do Concreto (Fck - MPa)", opts_fck, index=idx_fck)
 
 prof_minima_global = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5)
-
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=def_taxa, step=0.1)
 
 opts_bitola = [10.0, 12.5, 16.0, 20.0, 25.0]
@@ -424,7 +488,6 @@ if st.session_state.df_projeto is not None:
                 prof = prof_minima_global
                 
             profundidades.append(prof)
-            
             peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
             
             pesos_long_estaca.append(peso_long)
@@ -480,25 +543,42 @@ if st.session_state.df_projeto is not None:
             st.dataframe(df_mostrar, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("🏗️ Exportação para BIM 5D (.IFC4)")
+        st.subheader("🏗️ Exportação e Relatórios (BIM e PDF)")
         
-        if HAS_BIM:
-            if st.button("🚀 Gerar Ficheiro 3D (.IFC4) - Otimizado para Visus", type="primary", use_container_width=True):
-                with st.spinner("A modelar as estacas e a compilar mapa de quantidades IFC4..."):
-                    try:
-                        ifc_string = gerar_modelo_ifc(df)
-                        st.success("✅ Modelo BIM gerado com sucesso!")
-                        st.download_button(
-                            label="⬇️ Baixar Modelo IFC4 (Pronto para Orçamentação)",
-                            data=ifc_string.encode('utf-8'),
-                            file_name="Projeto_Fundacoes_5D.ifc",
-                            mime="application/octet-stream",
-                            use_container_width=True
-                        )
-                    except Exception as e:
-                        st.error(f"Erro ao gerar IFC: {e}")
-        else:
-            st.error("❌ A biblioteca 'ifcopenshell' não foi carregada.")
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if HAS_BIM:
+                if st.button("🚀 Gerar Ficheiro 3D (.IFC4) - Otimizado para Visus", type="primary", use_container_width=True):
+                    with st.spinner("A modelar as estacas e a compilar mapa de quantidades IFC4..."):
+                        try:
+                            ifc_string = gerar_modelo_ifc(df)
+                            st.success("✅ Modelo BIM gerado com sucesso!")
+                            st.download_button(
+                                label="⬇️ Baixar Modelo IFC4 (Pronto para Orçamentação)",
+                                data=ifc_string.encode('utf-8'),
+                                file_name="Projeto_Fundacoes_5D.ifc",
+                                mime="application/octet-stream",
+                                use_container_width=True
+                            )
+                        except Exception as e:
+                            st.error(f"Erro ao gerar IFC: {e}")
+            else:
+                st.error("❌ A biblioteca 'ifcopenshell' não foi carregada.")
+
+        with col_btn2:
+            try:
+                pdf_estrutural = gerar_memorial_estrutural_pdf(df, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo)
+                st.download_button(
+                    label="📄 Baixar Memorial Estrutural (PDF)",
+                    data=pdf_estrutural,
+                    file_name="Memorial_Calculo_Estrutural.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"Erro ao compilar o PDF Estrutural: {e}")
 
     else:
         st.warning("⚠️ **DIAGNÓSTICO:** O Radar não encontrou coordenadas na tabela do DXF.")
