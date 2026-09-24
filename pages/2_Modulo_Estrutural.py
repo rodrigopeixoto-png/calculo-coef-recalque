@@ -276,54 +276,71 @@ def gerar_modelo_ifc(df_projeto):
             local_placement = model.createIfcLocalPlacement(None, loc_placement)
             pile.ObjectPlacement = local_placement
             
-            # --- A MÁGICA DO DISFARCE: INJEÇÃO DE PSETS NATIVOS DO EBERICK ---
+            # --- A MÁGICA DO DISFARCE: INJEÇÃO FORÇADA DE MEDIDAS FÍSICAS (NATIVO IFC) ---
             try:
-                # 1. AltoQi_Eberick-Itens_associados (A pasta de Ouro para o Visus!)
-                pset_itens = run("pset.add_pset", model, product=pile, name="AltoQi_Eberick-Itens_associados")
-                run("pset.edit_pset", model, pset=pset_itens, properties={
-                    "Status": "Dimensionado",
-                    f"Concreto - C-{int(fck_val)} - Abatimento 5 cm": float(vol_concreto_estaca),
-                    f"Armadura - Aço {aco_long_tipo} - ø {bitola_l:.1f} mm": float(peso_l_estaca),
-                    f"Armadura - Aço {aco_estribo_tipo} - ø {bitola_e:.1f} mm": float(peso_e_estaca)
+                # Função interna para criar propriedades blindadas com tipagem IFC
+                def injetar_propriedades(nome_pset, dic_props):
+                    pset = run("pset.add_pset", model, product=pile, name=nome_pset)
+                    lista_props = []
+                    for k, v in dic_props.items():
+                        t = v["type"]
+                        val = v["value"]
+                        
+                        # Carimba a unidade física exata na variável!
+                        if t == "IfcLabel": ifc_val = model.createIfcLabel(str(val))
+                        elif t == "IfcMassMeasure": ifc_val = model.createIfcMassMeasure(float(val))
+                        elif t == "IfcVolumeMeasure": ifc_val = model.createIfcVolumeMeasure(float(val))
+                        elif t == "IfcLengthMeasure": ifc_val = model.createIfcLengthMeasure(float(val))
+                        elif t == "IfcForceMeasure": ifc_val = model.createIfcForceMeasure(float(val))
+                        elif t == "IfcReal": ifc_val = model.createIfcReal(float(val))
+                        elif t == "IfcInteger": ifc_val = model.createIfcInteger(int(val))
+                        else: ifc_val = model.createIfcLabel(str(val))
+                        
+                        lista_props.append(model.createIfcPropertySingleValue(k, None, ifc_val, None))
+                    
+                    pset.HasProperties = lista_props
+
+                # 1. AltoQi_Eberick-Itens_associados (Com Kg e m³)
+                injetar_propriedades("AltoQi_Eberick-Itens_associados", {
+                    "Status": {"type": "IfcLabel", "value": "Dimensionado"},
+                    f"Concreto - C-{int(fck_val)} - Abatimento 5 cm": {"type": "IfcVolumeMeasure", "value": vol_concreto_estaca},
+                    f"Armadura - Aço {aco_long_tipo} - ø {bitola_l:.1f} mm": {"type": "IfcMassMeasure", "value": peso_l_estaca},
+                    f"Armadura - Aço {aco_estribo_tipo} - ø {bitola_e:.1f} mm": {"type": "IfcMassMeasure", "value": peso_e_estaca}
                 })
                 
-                # 2. AltoQi_Eberick_Elemento (Com profundidade injetada!)
-                pset_elemento = run("pset.add_pset", model, product=pile, name="AltoQi_Eberick_Elemento")
-                run("pset.edit_pset", model, pset=pset_elemento, properties={
-                    "Elemento": "Estaca",
-                    "Elevação": 0.0,
-                    "Comprimento_m": float(prof),  
-                    "Seção_LB": float(diam * 100),
-                    "Seção_LH": float(diam * 100),
-                    "Tipo": 1
+                # 2. AltoQi_Eberick_Elemento 
+                injetar_propriedades("AltoQi_Eberick_Elemento", {
+                    "Elemento": {"type": "IfcLabel", "value": "Estaca"},
+                    "Elevação": {"type": "IfcLengthMeasure", "value": 0.0},
+                    "Comprimento_m": {"type": "IfcLengthMeasure", "value": prof},
+                    "Seção_LB": {"type": "IfcReal", "value": diam * 100}, # Usado IfcReal para exibir apenas "50" ou "80"
+                    "Seção_LH": {"type": "IfcReal", "value": diam * 100},
+                    "Tipo": {"type": "IfcInteger", "value": 1}
                 })
                 
                 # 3. AltoQi_Eberick_Padrão
-                pset_padrao = run("pset.add_pset", model, product=pile, name="AltoQi_Eberick_Padrão")
-                run("pset.edit_pset", model, pset=pset_padrao, properties={
-                    "Classe de concreto": f"C-{int(fck_val)}",
-                    "Cobrimento": 5.0
+                injetar_propriedades("AltoQi_Eberick_Padrão", {
+                    "Classe de concreto": {"type": "IfcLabel", "value": f"C-{int(fck_val)}"},
+                    "Cobrimento": {"type": "IfcReal", "value": 5.0} 
                 })
                 
                 # 4. Pset_ConcreteElementGeneral
-                pset_concrete = run("pset.add_pset", model, product=pile, name="Pset_ConcreteElementGeneral")
-                run("pset.edit_pset", model, pset=pset_concrete, properties={
-                    "ConcreteCover": 5.0,
-                    "ConstructionMethod": "InSitu",
-                    "ExposureClass": 2,
-                    "StrengthClass": f"C-{int(fck_val)}"
+                injetar_propriedades("Pset_ConcreteElementGeneral", {
+                    "ConcreteCover": {"type": "IfcLengthMeasure", "value": 0.05}, # 0.05 Metros
+                    "ConstructionMethod": {"type": "IfcLabel", "value": "InSitu"},
+                    "ExposureClass": {"type": "IfcLabel", "value": "2"},
+                    "StrengthClass": {"type": "IfcLabel", "value": f"C-{int(fck_val)}"}
                 })
 
                 # 5. Pset_PileCommon 
-                pset_pile = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
-                run("pset.edit_pset", model, pset=pset_pile, properties={
-                    "Reference": f"Estaca circular HC{int(diam*100)} - Concreto C-{int(fck_val)}",
-                    "Profundidade_Estaca_m": float(prof), 
-                    "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
-                    "LoadBearing": True
+                injetar_propriedades("Pset_PileCommon", {
+                    "Reference": {"type": "IfcLabel", "value": f"Estaca circular HC{int(diam*100)} - Concreto C-{int(fck_val)}"},
+                    "Profundidade_Estaca_m": {"type": "IfcLengthMeasure", "value": prof},
+                    "Carga_Aplicada_kN": {"type": "IfcForceMeasure", "value": float(row.get('Carga_por_Estaca_kN', 0))}
                 })
+                
             except Exception as e:
-                pass 
+                pass
                 
     return model.to_string()
 
