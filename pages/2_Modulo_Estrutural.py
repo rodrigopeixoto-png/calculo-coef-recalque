@@ -273,16 +273,19 @@ def gerar_modelo_ifc(df_projeto):
             try:
                 pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
                 run("pset.edit_pset", model, pset=pset, properties={
-                    "Reference": str(row['Pilar']), "LoadBearing": True,
+                    "Reference": str(row['Pilar']), 
+                    "LoadBearing": True,
                     "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
                     "Volume_Concreto_m3": float(vol_concreto_estaca),
-                    "Classe_Resistencia_Concreto": f"C{int(fck_val)}", "Diametro_Estaca_m": float(diam),
+                    "Classe_Resistencia_Concreto": f"C{int(fck_val)}", 
+                    "Diametro_Estaca_m": float(diam),
+                    "Profundidade_Estaca_m": float(prof),
                     "Armadura_Descricao": str(row.get('Armadura_Principal', 'N/A')),
                     "Peso_Aco_Total_kg": float(peso_l_estaca + peso_e_estaca),
                     f"Peso_Aco_Longitudinal_{bitola_l}mm_kg": float(peso_l_estaca),
                     f"Peso_Aco_Estribo_{bitola_e}mm_kg": float(peso_e_estaca)
                 })
-            except Exception: pass 
+            except Exception: pass
     return model.to_string()
 
 # -----------------------------------------------------------------------------
