@@ -13,7 +13,6 @@ try:
 except ImportError:
     st.error("A biblioteca 'ezdxf' não está instalada. Adicione 'ezdxf' ao requirements.txt e faça reboot!")
 
-# Tentar importar a biblioteca BIM
 try:
     import ifcopenshell
     from ifcopenshell.api import run
@@ -48,7 +47,6 @@ PARAMETROS_SOLO = {
 def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
 def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-# Atualizado com o Limitador Físico (Prof. Mínima)
 def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio="Média dos Métodos", prof_minima=6.0):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
@@ -84,21 +82,22 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     df_suficiente = df_spt[df_spt[col_adotada] >= carga_alvo_kn]
     
     prof_calc = df_suficiente.iloc[0]["Profundidade (m)"] if len(df_suficiente) > 0 else df_spt["Profundidade (m)"].max()
-    return max(prof_calc, prof_minima) # AQUI ESTÁ O SEU LIMITADOR!
+    return max(prof_calc, prof_minima)
 
+# Atualizado para retornar pesos separados (Longitudinal vs Estribo)
 def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
     Area_c = (np.pi * diametro_m**2) / 4
     area_barra = (np.pi * (bitola_long / 1000)**2) / 4  
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
     As_total = n_barras * area_barra
     
-    L_arm = prof_m if l_manual is None else min(l_manual, prof_m) # O Limitador físico da gaiola
+    L_arm = prof_m if l_manual is None else min(l_manual, prof_m)
     
     peso_long = As_total * L_arm * 7850
     qtd_estribos = int(L_arm / (espacamento / 100))
     peso_estribo = qtd_estribos * (np.pi * (diametro_m - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
     
-    return peso_long + peso_estribo, n_barras, L_arm
+    return peso_long, peso_estribo, n_barras, L_arm
 
 # -----------------------------------------------------------------------------
 # RADAR GEOMÉTRICO (DXF)
@@ -178,22 +177,20 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# NOVO: MOTOR DE EXPORTAÇÃO BIM (.IFC) CORRIGIDO (API Recente)
+# MOTOR DE EXPORTAÇÃO BIM (.IFC) AVANÇADO (IFC4)
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
-    model = ifcopenshell.file()
+    # Usar IFC4 explícito para melhor suporte em softwares 5D (Visus, PriMus)
+    model = ifcopenshell.file(schema="IFC4")
     
-    # Criar Projeto e Contextos
     project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
     context = run("context.add_context", model, context_type="Model")
     body = run("context.add_context", model, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context)
     
     site = run("root.create_entity", model, ifc_class="IfcSite", name="Terreno")
-    # CORREÇÃO AQUI: Usar products=[site] em vez de related_object
     run("aggregate.assign_object", model, relating_object=project, products=[site])
     
     building = run("root.create_entity", model, ifc_class="IfcBuilding", name="Fundações Profundas")
-    # CORREÇÃO AQUI: Usar products=[building] em vez de related_object
     run("aggregate.assign_object", model, relating_object=site, products=[building])
     
     for idx, row in df_projeto.iterrows():
@@ -202,6 +199,14 @@ def gerar_modelo_ifc(df_projeto):
         ne = int(row.get('ne', 1))
         x_base = row.get('X_m', 0)
         y_base = row.get('Y_m', 0)
+        
+        # Variáveis desmembradas para o orçamento 5D (Por Estaca Individual)
+        peso_l_estaca = row.get('Peso_Long_Estaca_kg', 0)
+        peso_e_estaca = row.get('Peso_Estribo_Estaca_kg', 0)
+        bitola_l = row.get('Bitola_Long_mm', 10.0)
+        bitola_e = row.get('Bitola_Estribo_mm', 5.0)
+        fck_val = row.get('Fck_MPa', 25)
+        vol_concreto_estaca = row.get('Vol_Concreto_m3', 0) / ne
         
         for i in range(ne):
             if ne == 1:
@@ -215,7 +220,6 @@ def gerar_modelo_ifc(df_projeto):
             nome_estaca = f"Estaca_{row['Pilar']}" if ne == 1 else f"Estaca_{row['Pilar']}_{i+1}"
             pile = run("root.create_entity", model, ifc_class="IfcPile", name=nome_estaca)
             
-            # CORREÇÃO AQUI: Usar products=[pile] em vez de related_element
             run("spatial.assign_container", model, relating_structure=building, products=[pile])
             
             # Geometria
@@ -224,7 +228,6 @@ def gerar_modelo_ifc(df_projeto):
             axis2d = model.createIfcAxis2Placement2D(pt, dir2d)
             profile = model.createIfcCircleProfileDef("AREA", None, axis2d, float(diam / 2.0))
             
-            # Extrusão
             pt_3d = model.createIfcCartesianPoint((0.0, 0.0, 0.0))
             dir_z = model.createIfcDirection((0.0, 0.0, 1.0))
             dir_x = model.createIfcDirection((1.0, 0.0, 0.0))
@@ -235,21 +238,24 @@ def gerar_modelo_ifc(df_projeto):
             prod_def = model.createIfcProductDefinitionShape(None, None, [shape_rep])
             pile.Representation = prod_def
             
-            # Posicionamento no Mundo Real
             pt_loc = model.createIfcCartesianPoint((float(x_base + dx), float(y_base + dy), float(-prof)))
             loc_placement = model.createIfcAxis2Placement3D(pt_loc, dir_z, dir_x)
             local_placement = model.createIfcLocalPlacement(None, loc_placement)
             pile.ObjectPlacement = local_placement
             
-            # Injetar Metadados
+            # Injetar Metadados Avançados (Concreto e Aço Fragmentado)
             try:
                 pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
                 run("pset.edit_pset", model, pset=pset, properties={
                     "Reference": str(row['Pilar']),
                     "LoadBearing": True,
                     "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
-                    "Volume_Betao_m3": float(row.get('Vol_Concreto_m3', 0) / ne),
-                    "Armadura": str(row.get('Armadura_Principal', 'N/A'))
+                    "Volume_Concreto_m3": float(vol_concreto_estaca),
+                    "Classe_Resistencia_Concreto": f"C{int(fck_val)}",
+                    "Armadura_Descricao": str(row.get('Armadura_Principal', 'N/A')),
+                    "Peso_Aco_Total_kg": float(peso_l_estaca + peso_e_estaca),
+                    f"Peso_Aco_Longitudinal_{bitola_l}mm_kg": float(peso_l_estaca),
+                    f"Peso_Aco_Estribo_{bitola_e}mm_kg": float(peso_e_estaca)
                 })
             except Exception:
                 pass 
@@ -261,7 +267,7 @@ def gerar_modelo_ifc(df_projeto):
 # INTERFACE PRINCIPAL E BARRA LATERAL
 # -----------------------------------------------------------------------------
 st.title("🏢 Gestor BIM & Orçamento de Fundações")
-st.caption("Dimensionamento automático cruzando CAD, Terreno e Exportação IFC Nativa")
+st.caption("Dimensionamento 5D automático cruzando CAD, Terreno e Exportação IFC4")
 
 st.sidebar.header("1️⃣ Importar Terreno (.utea)")
 arquivo_utea = st.sidebar.file_uploader("Ficheiro .utea", type=["utea", "json"])
@@ -286,8 +292,9 @@ st.sidebar.header("2️⃣ Importar Planta")
 arquivo_upload = st.sidebar.file_uploader("Planta do Eberick (.dxf, .xlsx)", type=["dxf", "xlsx", "csv"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("3️⃣ Configuração Estrutural")
-prof_minima_global = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5, help="Mesmo sem carga, a estaca desce até aqui.")
+st.sidebar.header("3️⃣ Configuração Estrutural e Materiais")
+fck_concreto = st.sidebar.selectbox("Classe do Concreto (Fck - MPa)", [20, 25, 30, 35, 40], index=1)
+prof_minima_global = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
 bitola = st.sidebar.selectbox("Bitola Long. (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
 bitola_estribo = st.sidebar.selectbox("Bitola Estribo (mm)", [5.0, 6.3, 8.0, 10.0], index=1)
@@ -330,6 +337,7 @@ if st.session_state.df_projeto is not None:
         df["Carga_por_Estaca_kN"] = (df["Carga_Max_tf"] * 10) / df["ne"]
 
         profundidades, pesos_aco, detalhes_armadura = [], [], []
+        pesos_long_estaca, pesos_estribo_estaca = [], []
 
         df_spt_atual = dados_terreno[furo_selecionado] if furo_selecionado and furo_selecionado in dados_terreno else None
         if df_spt_atual is None: st.warning("⚠️ Sem Terreno (.utea). Assumindo a Profundidade Mínima para orçamento.")
@@ -337,13 +345,23 @@ if st.session_state.df_projeto is not None:
         for index, row in df.iterrows():
             prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global) if df_spt_atual is not None else prof_minima_global
             profundidades.append(prof)
-            peso_estaca, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
-            pesos_aco.append(peso_estaca * row["ne"])
+            
+            # Cálculo de Aço Separado
+            peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
+            
+            pesos_long_estaca.append(peso_long)
+            pesos_estribo_estaca.append(peso_estribo)
+            pesos_aco.append((peso_long + peso_estribo) * row["ne"])
             detalhes_armadura.append(f"{num_barras} Φ {bitola} (L={comp_gaiola:.1f}m)")
                 
         df["Profundidade_m"] = profundidades
         df["Peso_Aco_kg"] = pesos_aco
+        df["Peso_Long_Estaca_kg"] = pesos_long_estaca
+        df["Peso_Estribo_Estaca_kg"] = pesos_estribo_estaca
         df["Armadura_Principal"] = detalhes_armadura
+        df["Fck_MPa"] = fck_concreto
+        df["Bitola_Long_mm"] = bitola
+        df["Bitola_Estribo_mm"] = bitola_estribo
 
         total_blocos = len(df)
         total_estacas = df["ne"].sum()
@@ -357,7 +375,7 @@ if st.session_state.df_projeto is not None:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Pilares / Blocos", f"{total_blocos} un")
         c2.metric("Total Perfurado", f"{total_metros:.1f} m", f"Em {total_estacas:.0f} estacas")
-        c3.metric("Volume de Betão/Concreto", f"{volume_concreto_total:.1f} m³")
+        c3.metric("Volume de Concreto", f"{volume_concreto_total:.1f} m³", f"Classe C{fck_concreto}")
         c4.metric("Aço Detalhado (Total)", f"{peso_aco_total:,.1f} kg")
 
         st.markdown("---")
@@ -384,25 +402,25 @@ if st.session_state.df_projeto is not None:
             st.dataframe(df_mostrar, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("🏗️ Exportação para BIM (.IFC)")
+        st.subheader("🏗️ Exportação para BIM 5D (.IFC4)")
         
         if HAS_BIM:
-            if st.button("🚀 Gerar Ficheiro 3D (.IFC)", type="primary", use_container_width=True):
-                with st.spinner("A modelar as estacas em 3D e a injetar metadados de engenharia..."):
+            if st.button("🚀 Gerar Ficheiro 3D (.IFC4) - Otimizado para Visus", type="primary", use_container_width=True):
+                with st.spinner("A modelar as estacas e a compilar mapa de quantidades IFC4..."):
                     try:
                         ifc_string = gerar_modelo_ifc(df)
                         st.success("✅ Modelo BIM gerado com sucesso!")
                         st.download_button(
-                            label="⬇️ Baixar Modelo IFC (Para Revit, Navisworks, etc.)",
+                            label="⬇️ Baixar Modelo IFC4 (Pronto para Orçamentação)",
                             data=ifc_string.encode('utf-8'),
-                            file_name="Projeto_Fundacoes_UTEA.ifc",
+                            file_name="Projeto_Fundacoes_5D.ifc",
                             mime="application/octet-stream",
                             use_container_width=True
                         )
                     except Exception as e:
                         st.error(f"Erro ao gerar IFC: {e}")
         else:
-            st.error("❌ A biblioteca 'ifcopenshell' não foi carregada. Verifique se adicionou 'ifcopenshell' no requirements.txt.")
+            st.error("❌ A biblioteca 'ifcopenshell' não foi carregada.")
 
     else:
         st.warning("⚠️ **DIAGNÓSTICO:** O Radar não encontrou coordenadas na tabela do DXF.")
