@@ -20,7 +20,7 @@ try:
 except ImportError:
     HAS_BIM = False
 
-st.set_page_config(page_title="Gestor BIM e Orçamento - Fundações", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="Módulo Estrutural e BIM - UTEA", page_icon="🏢", layout="wide")
 
 # -----------------------------------------------------------------------------
 # DICIONÁRIO GEOTÉCNICO
@@ -47,7 +47,8 @@ PARAMETROS_SOLO = {
 def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
 def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio="Média dos Métodos", prof_minima=6.0):
+# CÁLCULO ATUALIZADO COM RADAR DE BULBO DE TENSÕES
+def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -77,11 +78,48 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     df_spt["Rc Média"] = (df_spt["Rc Aoki"] + df_spt["Rc DQ"] + df_spt["Rc Teix"]) / 3.0
     df_spt["Rc Menor"] = df_spt[["Rc Aoki", "Rc DQ", "Rc Teix"]].min(axis=1)
 
-    col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor (Mais Conservador)" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
+    col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
 
+    # Filtra todas as profundidades onde a capacidade já foi atingida
     df_suficiente = df_spt[df_spt[col_adotada] >= carga_alvo_kn]
     
-    prof_calc = df_suficiente.iloc[0]["Profundidade (m)"] if len(df_suficiente) > 0 else df_spt["Profundidade (m)"].max()
+    prof_calc = None
+    
+    if len(df_suficiente) > 0:
+        if verificar_bulbo:
+            # Raio de Influência do Bulbo de Tensões
+            fator_grupo = np.sqrt(ne) if ne > 1 else 1.0
+            zona_influencia_m = max(3.0, 3.0 * diametro_m * fator_grupo)
+            
+            for idx in df_suficiente.index:
+                prof_teste = df_spt.loc[idx, "Profundidade (m)"]
+                spt_ponta = df_spt.loc[idx, "N_SPT"]
+                
+                # Inspeciona o que está debaixo da ponta (O Radar do Bulbo)
+                camadas_abaixo = df_spt[(df_spt["Profundidade (m)"] > prof_teste) & 
+                                        (df_spt["Profundidade (m)"] <= prof_teste + zona_influencia_m)]
+                
+                solo_seguro = True
+                if len(camadas_abaixo) > 0:
+                    spt_minimo_abaixo = camadas_abaixo["N_SPT"].min()
+                    # Critério de Rejeição: Solo fraco ou queda de 50% de resistência no SPT
+                    if spt_minimo_abaixo <= 3 or spt_minimo_abaixo < (spt_ponta * 0.5):
+                        solo_seguro = False
+                        
+                # Se for seguro, adota esta profundidade e para de procurar!
+                if solo_seguro:
+                    prof_calc = prof_teste
+                    break
+            
+            # Se o loop terminou e não achou solo seguro, desce até ao máximo do furo
+            if prof_calc is None:
+                prof_calc = df_spt["Profundidade (m)"].max()
+        else:
+            # Sem radar, assume a primeira profundidade encontrada
+            prof_calc = df_suficiente.iloc[0]["Profundidade (m)"]
+    else:
+        prof_calc = df_spt["Profundidade (m)"].max()
+        
     return max(prof_calc, prof_minima)
 
 def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
@@ -219,7 +257,6 @@ def gerar_modelo_ifc(df_projeto):
             
             run("spatial.assign_container", model, relating_structure=building, products=[pile])
             
-            # Aqui fica o Radius bloqueado na geometria do modelo
             pt = model.createIfcCartesianPoint((0.0, 0.0))
             dir2d = model.createIfcDirection((1.0, 0.0))
             axis2d = model.createIfcAxis2Placement2D(pt, dir2d)
@@ -240,7 +277,6 @@ def gerar_modelo_ifc(df_projeto):
             local_placement = model.createIfcLocalPlacement(None, loc_placement)
             pile.ObjectPlacement = local_placement
             
-            # Injetamos o "Diametro" exato na raiz do Pset para fácil extração no Visus
             try:
                 pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
                 run("pset.edit_pset", model, pset=pset, properties={
@@ -301,6 +337,10 @@ arquivo_upload = st.sidebar.file_uploader("Planta do Eberick (.dxf, .xlsx)", typ
 
 st.sidebar.markdown("---")
 st.sidebar.header("3️⃣ Configuração Estrutural e Materiais")
+
+# NOVO CONTROLO: O RADAR DO BULBO DE TENSÕES
+verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True, help="O algoritmo não pára logo na primeira profundidade viável. Ele varre as camadas subjacentes (mínimo de 3x Diâmetro) e caso encontre solo fraco ou perda de 50% de resistência, desce a estaca para ancorar em solo firme.")
+
 fck_concreto = st.sidebar.selectbox("Classe do Concreto (Fck - MPa)", [20, 25, 30, 35, 40], index=1)
 prof_minima_global = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
@@ -348,9 +388,14 @@ if st.session_state.df_projeto is not None:
         pesos_long_estaca, pesos_estribo_estaca = [], []
 
         df_spt_atual = dados_terreno[furo_selecionado] if furo_selecionado and furo_selecionado in dados_terreno else None
+        if df_spt_atual is None: st.warning("⚠️ Sem Terreno (.utea). Assumindo a Profundidade Mínima para orçamento.")
 
         for index, row in df.iterrows():
-            prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global) if df_spt_atual is not None else prof_minima_global
+            if df_spt_atual is not None:
+                prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo) 
+            else:
+                prof = prof_minima_global
+                
             profundidades.append(prof)
             
             peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
