@@ -130,7 +130,7 @@ def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bit
     return peso_long, peso_estribo, n_barras, L_arm
 
 # -----------------------------------------------------------------------------
-# RADAR GEOMÉTRICO (DXF)
+# RADAR GEOMÉTRICO (DXF) - ATUALIZADO PARA SUPORTAR P-E-1, P_1, etc.
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
@@ -164,8 +164,8 @@ def extrair_tabela_do_dxf(dxf_bytes):
     headers_x = {'x': None, 'y': None, 'carga': None, 'ne': None, 'estaca': None}
     for index, row in df_raw.iterrows():
         val = str(row['Texto']).lower().strip()
-        if val in ['x', 'x(cm)', 'x (cm)', 'x(m)', 'x (m)']: headers_x['x'] = row['X']
-        elif val in ['y', 'y(cm)', 'y (cm)', 'y(m)', 'y (m)']: headers_x['y'] = row['X']
+        if val in ['x', 'x(cm)', 'x (cm)', 'x(m)', 'x (m)', 'coord.x']: headers_x['x'] = row['X']
+        elif val in ['y', 'y(cm)', 'y (cm)', 'y(m)', 'y (m)', 'coord.y']: headers_x['y'] = row['X']
         elif 'carga' in val and ('máx' in val or 'max' in val or 'tf' in val or 'kn' in val): headers_x['carga'] = row['X']
         elif val == 'ne': headers_x['ne'] = row['X']
         elif val == 'estaca': headers_x['estaca'] = row['X']
@@ -174,7 +174,9 @@ def extrair_tabela_do_dxf(dxf_bytes):
         for index, row in df_raw.iterrows():
             if 'carga' in str(row['Texto']).lower(): headers_x['carga'] = row['X']
 
-    pilares = df_raw[df_raw['Texto'].str.match(r'^P\s*\d+$', case=False)].copy()
+    # --- A CORREÇÃO ESTÁ AQUI: Novo Regex que aceita "P-E-1", "P_1", "PE 12", etc. ---
+    pilares = df_raw[df_raw['Texto'].str.match(r'^P[-_A-Za-z]*\s*\d+$', case=False)].copy()
+    
     if len(pilares) == 0: return None, df_raw
 
     y_vals = sorted(pilares['Y'].unique(), reverse=True)
@@ -183,6 +185,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
     linhas_dados = []
     for _, p in pilares.iterrows():
         linha_textos = df_raw[abs(df_raw['Y'] - p['Y']) <= tolerancia_y].copy()
+        
         def pega_valor(chave):
             x_alvo = headers_x[chave]
             if x_alvo is None or len(linha_textos) == 0: return None
