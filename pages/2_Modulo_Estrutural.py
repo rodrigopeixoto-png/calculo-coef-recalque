@@ -209,12 +209,27 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# MOTOR DE EXPORTAÇÃO BIM (.IFC4) - PADRÃO EBERICK / VISUS 5D
+# MOTOR DE EXPORTAÇÃO BIM (.IFC4)
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
     model = ifcopenshell.file(schema="IFC4")
     
     project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
+    
+    # --- DECLARAÇÃO GLOBAL DE UNIDADES (Força o Kg, m³, m e kN no ficheiro inteiro) ---
+    try:
+        u_len = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+        u_area = model.create_entity("IfcSIUnit", UnitType="AREAUNIT", Name="SQUARE_METRE")
+        u_vol = model.create_entity("IfcSIUnit", UnitType="VOLUMEUNIT", Name="CUBIC_METRE")
+        u_mass = model.create_entity("IfcSIUnit", UnitType="MASSUNIT", Prefix="KILO", Name="GRAM")
+        u_force = model.create_entity("IfcSIUnit", UnitType="FORCEUNIT", Prefix="KILO", Name="NEWTON")
+        
+        unit_assig = model.create_entity("IfcUnitAssignment", Units=[u_len, u_area, u_vol, u_mass, u_force])
+        project.UnitsInContext = unit_assig
+    except Exception as e:
+        pass
+    # ---------------------------------------------------------------------------------
+    
     context = run("context.add_context", model, context_type="Model")
     body = run("context.add_context", model, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context)
     
