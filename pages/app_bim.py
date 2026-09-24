@@ -269,23 +269,37 @@ def gerar_modelo_ifc(df_projeto):
 st.title("🏢 Gestor BIM & Orçamento de Fundações")
 st.caption("Dimensionamento 5D automático cruzando CAD, Terreno e Exportação IFC4")
 
-st.sidebar.header("1️⃣ Importar Terreno (.utea)")
-arquivo_utea = st.sidebar.file_uploader("Ficheiro .utea", type=["utea", "json"])
+st.sidebar.header("1️⃣ Dados do Terreno Geotécnico")
 
 dados_terreno = {}
 furo_selecionado = None
 criterio_selecionado = "Média dos Métodos"
+conteudo_utea = None
 
-if arquivo_utea is not None:
+# 1. Tenta ler automaticamente da memória (Integração Direta)
+if 'projeto_geotecnico' in st.session_state and st.session_state['projeto_geotecnico'] is not None:
+    st.sidebar.success("🔗 Terreno sincronizado automaticamente do Módulo Geotécnico!")
+    conteudo_utea = st.session_state['projeto_geotecnico']
+
+# 2. Plano B: Se não houver nada na memória, pede o Upload
+else:
+    st.sidebar.info("O projeto geotécnico não foi encontrado na memória. Faça o upload manual ou volte à página anterior.")
+    arquivo_utea = st.sidebar.file_uploader("Ficheiro .utea", type=["utea", "json"])
+    if arquivo_utea is not None:
+        conteudo_utea = json.loads(arquivo_utea.read().decode('utf-8'))
+
+# 3. Processa os dados (quer venham da memória ou do ficheiro)
+if conteudo_utea is not None:
     try:
-        conteudo = json.loads(arquivo_utea.read().decode('utf-8'))
-        for nome, info in conteudo.get("furos", {}).items():
+        # Se os DataFrames estiverem em formato de dicionário/lista (como no JSON)
+        for nome, info in conteudo_utea.get("furos", {}).items():
             dados_terreno[nome] = pd.DataFrame(info["df"])
-        st.sidebar.success(f"Terreno lido! ({len(dados_terreno)} furos)")
-        furo_selecionado = st.sidebar.selectbox("Furo Base:", list(dados_terreno.keys()))
-        criterio_selecionado = st.sidebar.selectbox("Critério:", ["Média dos Métodos", "Menor Valor", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma"])
+        
+        if dados_terreno:
+            furo_selecionado = st.sidebar.selectbox("Furo Base para Cálculo:", list(dados_terreno.keys()))
+            criterio_selecionado = st.sidebar.selectbox("Critério Geotécnico:", ["Média dos Métodos", "Menor Valor", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"])
     except Exception as e:
-        st.sidebar.error("Erro ao ler terreno.")
+        st.sidebar.error(f"Erro ao ler os dados do terreno: {e}")
 
 st.sidebar.markdown("---")
 st.sidebar.header("2️⃣ Importar Planta")
