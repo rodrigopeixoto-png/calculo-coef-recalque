@@ -84,7 +84,6 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     prof_calc = df_suficiente.iloc[0]["Profundidade (m)"] if len(df_suficiente) > 0 else df_spt["Profundidade (m)"].max()
     return max(prof_calc, prof_minima)
 
-# Atualizado para retornar pesos separados (Longitudinal vs Estribo)
 def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
     Area_c = (np.pi * diametro_m**2) / 4
     area_barra = (np.pi * (bitola_long / 1000)**2) / 4  
@@ -177,10 +176,9 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# MOTOR DE EXPORTAÇÃO BIM (.IFC) AVANÇADO (IFC4)
+# MOTOR DE EXPORTAÇÃO BIM (.IFC4)
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
-    # Usar IFC4 explícito para melhor suporte em softwares 5D (Visus, PriMus)
     model = ifcopenshell.file(schema="IFC4")
     
     project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
@@ -200,7 +198,6 @@ def gerar_modelo_ifc(df_projeto):
         x_base = row.get('X_m', 0)
         y_base = row.get('Y_m', 0)
         
-        # Variáveis desmembradas para o orçamento 5D (Por Estaca Individual)
         peso_l_estaca = row.get('Peso_Long_Estaca_kg', 0)
         peso_e_estaca = row.get('Peso_Estribo_Estaca_kg', 0)
         bitola_l = row.get('Bitola_Long_mm', 10.0)
@@ -222,7 +219,7 @@ def gerar_modelo_ifc(df_projeto):
             
             run("spatial.assign_container", model, relating_structure=building, products=[pile])
             
-            # Geometria
+            # Aqui fica o Radius bloqueado na geometria do modelo
             pt = model.createIfcCartesianPoint((0.0, 0.0))
             dir2d = model.createIfcDirection((1.0, 0.0))
             axis2d = model.createIfcAxis2Placement2D(pt, dir2d)
@@ -243,7 +240,7 @@ def gerar_modelo_ifc(df_projeto):
             local_placement = model.createIfcLocalPlacement(None, loc_placement)
             pile.ObjectPlacement = local_placement
             
-            # Injetar Metadados Avançados (Concreto e Aço Fragmentado)
+            # Injetamos o "Diametro" exato na raiz do Pset para fácil extração no Visus
             try:
                 pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
                 run("pset.edit_pset", model, pset=pset, properties={
@@ -252,6 +249,7 @@ def gerar_modelo_ifc(df_projeto):
                     "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
                     "Volume_Concreto_m3": float(vol_concreto_estaca),
                     "Classe_Resistencia_Concreto": f"C{int(fck_val)}",
+                    "Diametro_Estaca_m": float(diam),
                     "Armadura_Descricao": str(row.get('Armadura_Principal', 'N/A')),
                     "Peso_Aco_Total_kg": float(peso_l_estaca + peso_e_estaca),
                     f"Peso_Aco_Longitudinal_{bitola_l}mm_kg": float(peso_l_estaca),
@@ -276,22 +274,18 @@ furo_selecionado = None
 criterio_selecionado = "Média dos Métodos"
 conteudo_utea = None
 
-# 1. Tenta ler automaticamente da memória (Integração Direta)
+# SINCRONIZAÇÃO AUTOMÁTICA
 if 'projeto_geotecnico' in st.session_state and st.session_state['projeto_geotecnico'] is not None:
     st.sidebar.success("🔗 Terreno sincronizado automaticamente do Módulo Geotécnico!")
     conteudo_utea = st.session_state['projeto_geotecnico']
-
-# 2. Plano B: Se não houver nada na memória, pede o Upload
 else:
-    st.sidebar.info("O projeto geotécnico não foi encontrado na memória. Faça o upload manual ou volte à página anterior.")
+    st.sidebar.info("Projeto geotécnico não sincronizado. Volte à página anterior ou faça upload manual.")
     arquivo_utea = st.sidebar.file_uploader("Ficheiro .utea", type=["utea", "json"])
     if arquivo_utea is not None:
         conteudo_utea = json.loads(arquivo_utea.read().decode('utf-8'))
 
-# 3. Processa os dados (quer venham da memória ou do ficheiro)
 if conteudo_utea is not None:
     try:
-        # Se os DataFrames estiverem em formato de dicionário/lista (como no JSON)
         for nome, info in conteudo_utea.get("furos", {}).items():
             dados_terreno[nome] = pd.DataFrame(info["df"])
         
@@ -354,13 +348,11 @@ if st.session_state.df_projeto is not None:
         pesos_long_estaca, pesos_estribo_estaca = [], []
 
         df_spt_atual = dados_terreno[furo_selecionado] if furo_selecionado and furo_selecionado in dados_terreno else None
-        if df_spt_atual is None: st.warning("⚠️ Sem Terreno (.utea). Assumindo a Profundidade Mínima para orçamento.")
 
         for index, row in df.iterrows():
             prof = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global) if df_spt_atual is not None else prof_minima_global
             profundidades.append(prof)
             
-            # Cálculo de Aço Separado
             peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
             
             pesos_long_estaca.append(peso_long)
