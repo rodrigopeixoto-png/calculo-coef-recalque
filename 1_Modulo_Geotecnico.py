@@ -180,6 +180,17 @@ st.sidebar.markdown("---")
 st.sidebar.header("📄 Relatório PDF")
 incluir_pm = st.sidebar.checkbox("Incluir Diagrama de Interação P-M?", value=True)
 
+# INTEGRAÇÃO GLOBAL: Guardar parâmetros na memória para o Módulo Estrutural
+st.session_state['params_globais'] = {
+    "fck": fck,
+    "taxa_armadura": taxa_armadura,
+    "bitola": bitola,
+    "bitola_estribo": bitola_estribo,
+    "espacamento_estribo": espacamento_estribo,
+    "L_armadura_manual": L_armadura_manual,
+    "criterio_q_adm": criterio_q_adm
+}
+
 st.sidebar.markdown("---")
 st.sidebar.header("💾 Gestão do Arquivo do Projeto")
 st.sidebar.info("Guarde o seu trabalho para continuar mais tarde.")
