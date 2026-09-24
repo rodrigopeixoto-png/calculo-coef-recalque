@@ -178,14 +178,13 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# NOVO: MOTOR DE EXPORTAÇÃO BIM (.IFC)
+# NOVO: MOTOR DE EXPORTAÇÃO BIM (.IFC) CORRIGIDO
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
     model = ifcopenshell.file()
     
-    # Criar Projeto e Contextos
+    # Criar Projeto e Contextos (Removida a exigência estrita de unidades)
     project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
-    run("unit.assign_standard_units", model)
     context = run("context.add_context", model, context_type="Model")
     body = run("context.add_context", model, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context)
     
@@ -201,12 +200,11 @@ def gerar_modelo_ifc(df_projeto):
         x_base = row.get('X_m', 0)
         y_base = row.get('Y_m', 0)
         
-        # Desenha cilindros individuais para cada estaca do bloco
         for i in range(ne):
             if ne == 1:
                 dx, dy = 0.0, 0.0
             else:
-                raio_distribuicao = 1.5 * diam # Afastamento estético das estacas no bloco
+                raio_distribuicao = 1.5 * diam 
                 angle = i * (2 * np.pi / ne)
                 dx = raio_distribuicao * np.cos(angle)
                 dy = raio_distribuicao * np.sin(angle)
@@ -215,13 +213,13 @@ def gerar_modelo_ifc(df_projeto):
             pile = run("root.create_entity", model, ifc_class="IfcPile", name=nome_estaca)
             run("spatial.assign_container", model, relating_structure=building, related_element=pile)
             
-            # Geometria (Perfil Circular)
+            # Geometria
             pt = model.createIfcCartesianPoint((0.0, 0.0))
             dir2d = model.createIfcDirection((1.0, 0.0))
             axis2d = model.createIfcAxis2Placement2D(pt, dir2d)
             profile = model.createIfcCircleProfileDef("AREA", None, axis2d, float(diam / 2.0))
             
-            # Extrusão (Desce a partir do Z=0)
+            # Extrusão
             pt_3d = model.createIfcCartesianPoint((0.0, 0.0, 0.0))
             dir_z = model.createIfcDirection((0.0, 0.0, 1.0))
             dir_x = model.createIfcDirection((1.0, 0.0, 0.0))
@@ -232,13 +230,13 @@ def gerar_modelo_ifc(df_projeto):
             prod_def = model.createIfcProductDefinitionShape(None, None, [shape_rep])
             pile.Representation = prod_def
             
-            # Posicionamento exato no Mundo Real (A extrusão é para cima, logo inserimos no fundo do furo)
+            # Posicionamento no Mundo Real
             pt_loc = model.createIfcCartesianPoint((float(x_base + dx), float(y_base + dy), float(-prof)))
             loc_placement = model.createIfcAxis2Placement3D(pt_loc, dir_z, dir_x)
             local_placement = model.createIfcLocalPlacement(None, loc_placement)
             pile.ObjectPlacement = local_placement
             
-            # Injetar os Metadados (O I do BIM!)
+            # Injetar Metadados
             try:
                 pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
                 run("pset.edit_pset", model, pset=pset, properties={
