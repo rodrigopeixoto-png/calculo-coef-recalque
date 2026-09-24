@@ -209,7 +209,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
     return None, df_raw
 
 # -----------------------------------------------------------------------------
-# MOTOR DE EXPORTAÇÃO BIM (.IFC4)
+# MOTOR DE EXPORTAÇÃO BIM (.IFC4) - PADRÃO EBERICK / VISUS 5D
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
     model = ifcopenshell.file(schema="IFC4")
@@ -238,6 +238,10 @@ def gerar_modelo_ifc(df_projeto):
         fck_val = row.get('Fck_MPa', 25)
         vol_concreto_estaca = row.get('Vol_Concreto_m3', 0) / ne
         
+        # Define o tipo de aço corretamente como o Eberick faz
+        aco_long_tipo = "CA50"
+        aco_estribo_tipo = "CA60" if bitola_e <= 6.3 else "CA50"
+        
         for i in range(ne):
             if ne == 1: dx, dy = 0.0, 0.0
             else:
@@ -246,8 +250,10 @@ def gerar_modelo_ifc(df_projeto):
                 dx = raio_distribuicao * np.cos(angle)
                 dy = raio_distribuicao * np.sin(angle)
             
-            nome_estaca = f"Estaca_{row['Pilar']}" if ne == 1 else f"Estaca_{row['Pilar']}_{i+1}"
+            # Formata o nome para ficar idêntico ao Eberick (ex: E-P1-1)
+            nome_estaca = f"E-{row['Pilar']}-{i+1}" if ne > 1 else f"E-{row['Pilar']}"
             pile = run("root.create_entity", model, ifc_class="IfcPile", name=nome_estaca)
+            
             run("spatial.assign_container", model, relating_structure=building, products=[pile])
             
             pt = model.createIfcCartesianPoint((0.0, 0.0))
@@ -270,22 +276,55 @@ def gerar_modelo_ifc(df_projeto):
             local_placement = model.createIfcLocalPlacement(None, loc_placement)
             pile.ObjectPlacement = local_placement
             
+            # --- A MÁGICA DO DISFARCE: INJEÇÃO DE PSETS NATIVOS DO EBERICK ---
             try:
-                pset = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
-                run("pset.edit_pset", model, pset=pset, properties={
-                    "Reference": str(row['Pilar']), 
-                    "LoadBearing": True,
-                    "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
-                    "Volume_Concreto_m3": float(vol_concreto_estaca),
-                    "Classe_Resistencia_Concreto": f"C{int(fck_val)}", 
-                    "Diametro_Estaca_m": float(diam),
-                    "Profundidade_Estaca_m": float(prof),
-                    "Armadura_Descricao": str(row.get('Armadura_Principal', 'N/A')),
-                    "Peso_Aco_Total_kg": float(peso_l_estaca + peso_e_estaca),
-                    f"Peso_Aco_Longitudinal_{bitola_l}mm_kg": float(peso_l_estaca),
-                    f"Peso_Aco_Estribo_{bitola_e}mm_kg": float(peso_e_estaca)
+                # 1. AltoQi_Eberick-Itens_associados (A pasta de Ouro para o Visus!)
+                pset_itens = run("pset.add_pset", model, product=pile, name="AltoQi_Eberick-Itens_associados")
+                run("pset.edit_pset", model, pset=pset_itens, properties={
+                    "Status": "Dimensionado",
+                    f"Concreto - C-{int(fck_val)} - Abatimento 5 cm": float(vol_concreto_estaca),
+                    f"Armadura - Aço {aco_long_tipo} - ø {bitola_l:.1f} mm": float(peso_l_estaca),
+                    f"Armadura - Aço {aco_estribo_tipo} - ø {bitola_e:.1f} mm": float(peso_e_estaca)
                 })
-            except Exception: pass
+                
+                # 2. AltoQi_Eberick_Elemento (Com profundidade injetada!)
+                pset_elemento = run("pset.add_pset", model, product=pile, name="AltoQi_Eberick_Elemento")
+                run("pset.edit_pset", model, pset=pset_elemento, properties={
+                    "Elemento": "Estaca",
+                    "Elevação": 0.0,
+                    "Comprimento_m": float(prof),  # <--- AQUI ESTÁ A PROFUNDIDADE!
+                    "Seção_LB": float(diam * 100),
+                    "Seção_LH": float(diam * 100),
+                    "Tipo": 1
+                })
+                
+                # 3. AltoQi_Eberick_Padrão
+                pset_padrao = run("pset.add_pset", model, product=pile, name="AltoQi_Eberick_Padrão")
+                run("pset.edit_pset", model, pset=pset_padrao, properties={
+                    "Classe de concreto": f"C-{int(fck_val)}",
+                    "Cobrimento": 5.0
+                })
+                
+                # 4. Pset_ConcreteElementGeneral
+                pset_concrete = run("pset.add_pset", model, product=pile, name="Pset_ConcreteElementGeneral")
+                run("pset.edit_pset", model, pset=pset_concrete, properties={
+                    "ConcreteCover": 5.0,
+                    "ConstructionMethod": "InSitu",
+                    "ExposureClass": 2,
+                    "StrengthClass": f"C-{int(fck_val)}"
+                })
+
+                # 5. Pset_PileCommon (Copiando o Eberick + Nossa Inteligência)
+                pset_pile = run("pset.add_pset", model, product=pile, name="Pset_PileCommon")
+                run("pset.edit_pset", model, pset=pset_pile, properties={
+                    "Reference": f"Estaca circular HC{int(diam*100)} - Concreto C-{int(fck_val)}",
+                    "Profundidade_Estaca_m": float(prof), # <--- E AQUI TAMBÉM!
+                    "Carga_Aplicada_kN": float(row.get('Carga_por_Estaca_kN', 0)),
+                    "LoadBearing": True
+                })
+            except Exception:
+                pass 
+                
     return model.to_string()
 
 # -----------------------------------------------------------------------------
