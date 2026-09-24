@@ -338,18 +338,45 @@ arquivo_upload = st.sidebar.file_uploader("Planta do Eberick (.dxf, .xlsx)", typ
 st.sidebar.markdown("---")
 st.sidebar.header("3️⃣ Configuração Estrutural e Materiais")
 
+# Puxa a memória global do módulo geotécnico
+config_memoria = st.session_state.get('params_globais', {})
+if config_memoria:
+    st.sidebar.success("✅ Materiais e Armaduras sincronizados!")
+
 # NOVO CONTROLO: O RADAR DO BULBO DE TENSÕES
-verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True, help="O algoritmo não pára logo na primeira profundidade viável. Ele varre as camadas subjacentes (mínimo de 3x Diâmetro) e caso encontre solo fraco ou perda de 50% de resistência, desce a estaca para ancorar em solo firme.")
+verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True, help="O algoritmo não pára logo na primeira profundidade viável. Ele varre as camadas subjacentes e caso encontre solo fraco, desce a estaca para ancorar em solo firme.")
 
-fck_concreto = st.sidebar.selectbox("Classe do Concreto (Fck - MPa)", [20, 25, 30, 35, 40], index=1)
+# Valores padrão com Fallback (Se existir na memória, usa; se não, usa o padrão)
+def_fck = int(config_memoria.get("fck", 25))
+def_taxa = float(config_memoria.get("taxa_armadura", 0.5))
+def_bitola = float(config_memoria.get("bitola", 10.0))
+def_bitola_e = float(config_memoria.get("bitola_estribo", 6.3))
+def_espac = float(config_memoria.get("espacamento_estribo", 15.0))
+def_l_man = config_memoria.get("L_armadura_manual", None)
+
+opts_fck = [20, 25, 30, 35, 40]
+idx_fck = opts_fck.index(def_fck) if def_fck in opts_fck else 1
+fck_concreto = st.sidebar.selectbox("Classe do Concreto (Fck - MPa)", opts_fck, index=idx_fck)
+
 prof_minima_global = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5)
-taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
-bitola = st.sidebar.selectbox("Bitola Long. (mm)", [10.0, 12.5, 16.0, 20.0, 25.0], index=0)
-bitola_estribo = st.sidebar.selectbox("Bitola Estribo (mm)", [5.0, 6.3, 8.0, 10.0], index=1)
-espacamento_estribo = st.sidebar.number_input("Espaçamento Estribos (cm)", min_value=5.0, max_value=30.0, value=15.0, step=2.5)
 
-gaiola_tipo = st.sidebar.selectbox("Gaiola", ["Total (Toda a estaca)", "Parcial (Manual)"])
-L_armadura_manual = st.sidebar.number_input("Comp. Manual (m)", value=6.0, step=0.5) if gaiola_tipo == "Parcial (Manual)" else None
+taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=def_taxa, step=0.1)
+
+opts_bitola = [10.0, 12.5, 16.0, 20.0, 25.0]
+idx_bitola = opts_bitola.index(def_bitola) if def_bitola in opts_bitola else 0
+bitola = st.sidebar.selectbox("Bitola Long. (mm)", opts_bitola, index=idx_bitola)
+
+opts_estribo = [5.0, 6.3, 8.0, 10.0]
+idx_estribo = opts_estribo.index(def_bitola_e) if def_bitola_e in opts_estribo else 1
+bitola_estribo = st.sidebar.selectbox("Bitola Estribo (mm)", opts_estribo, index=idx_estribo)
+
+espacamento_estribo = st.sidebar.number_input("Espaçamento Estribos (cm)", min_value=5.0, max_value=30.0, value=def_espac, step=2.5)
+
+idx_gaiola = 1 if def_l_man is not None else 0
+gaiola_tipo = st.sidebar.selectbox("Gaiola", ["Total (Toda a estaca)", "Parcial (Manual)"], index=idx_gaiola)
+
+val_l_man = def_l_man if def_l_man is not None else 6.0
+L_armadura_manual = st.sidebar.number_input("Comp. Manual (m)", value=val_l_man, step=0.5) if gaiola_tipo == "Parcial (Manual)" else None
 
 if 'df_projeto' not in st.session_state: st.session_state.df_projeto = None
 
