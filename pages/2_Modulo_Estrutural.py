@@ -531,6 +531,32 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
 st.title("🏢 Gestor BIM & Orçamento de Fundações")
 st.caption("Dimensionamento 5D automático cruzando CAD, Terreno e Exportação IFC4")
 
+with st.expander("📖 Guia de Utilização - Módulo Estrutural & BIM 5D", expanded=False):
+    st.markdown("""
+    ### 🎯 Objetivo do Módulo
+    Efetuar a integração entre o projeto geotécnico e a planta estrutural importada do CAD/Eberick, realizando o dimensionamento automático por bloco/pilar, verificação de estabilidade do solo e exportação do modelo **BIM 5D (.IFC4)** e **Memorial em PDF**.
+
+    ---
+
+    ### 📋 Passo a Passo de Operação
+
+    #### 1. Sincronização Geotécnica e Importação do CAD
+    * **Terreno (.utea):** Se veio diretamente do *Módulo Geotécnico*, o terreno já estará sincronizado automaticamente. Caso contrário, faça o upload do ficheiro `.utea`.
+    * **Planta de Cargas (.dxf):** Faça o upload da planta exportada do CAD/Eberick em formato `.dxf`. O algoritmo lerá autonomamente as coordenadas $(X,Y)$, a carga máxima de cada pilar e a quantidade de estacas por bloco.
+
+    #### 2. Configuração de Materiais e Radar de Bulbo
+    * **👁️ Radar do Bulbo de Tensões:** Mantendo ativado, o algoritmo inspeciona a zona de influência (mínimo de 3x o diâmetro) abaixo da ponta das estacas. Se detetar solos moles ($N_{SPT} \le 3$) ou perda acentuada de resistência, forçará o aprofundamento para evitar assentamentos.
+    * **Concreto e Armaduras:** Configure a classe de concreto ($F_{ck}$), a taxa de aço longitudinal, bitolas e espaçamento dos estribos. Os valores definidos no Módulo Geotécnico são herdados automaticamente.
+
+    #### 3. Análise Visual e Memória
+    * **Resumo Executivo:** Veja o volume total de concreto escavado, metragem de perfuração e peso total de aço ($CA50/CA60$).
+    * **Planta de Locação Topográfica:** Analise o mapa de calor interativo mostrando a profundidade de cada estaca e a distribuição de cargas no terreno.
+
+    #### 4. Exportação BIM 5D e Documentação
+    * **Modelo 3D (.IFC4):** Gere o ficheiro IFC perfeitamente padronizado com os metadados da AltoQi Eberick (`AltoQi_Eberick-Itens_associados`, `Pset_PileCommon`, etc.) e unidades nativas em **kg**, **m³**, **m**, **kN** e **cm** para integração direta no **Visus / PriMus**.
+    * **Memorial Estrutural (PDF):** Baixe o relatório analítico detalhado pilar a pilar com a memória geotécnica e quantitativos de armaduras e concreto.
+    """)
+
 st.sidebar.header("1️⃣ Dados do Terreno Geotécnico")
 
 dados_terreno = {}
