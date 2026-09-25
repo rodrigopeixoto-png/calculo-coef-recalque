@@ -584,6 +584,33 @@ def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_
 st.title("🏗️ Projeto Integrado de Fundações")
 st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Detalhamento de Armaduras e Diagrama P-M")
 
+with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=False):
+    st.markdown("""
+    ### 🎯 Objetivo do Módulo
+    Realizar a caracterização geotécnica do terreno, processar ensaios de **Sondagem a Percussão (SPT)** e determinar a capacidade de carga e profundidade de assentamento de fundações profundas através dos métodos consagrados da engenharia.
+
+    ---
+
+    ### 📋 Passo a Passo de Operação
+
+    #### 1. Identificação do Projeto e Sondagem
+    * **Identificação:** Na barra lateral, preencha o *Nome da Obra*, *Responsável Técnico* e *CREA*.
+    * **Perfil Geotécnico:** Introduza as camadas de solo do ensaio SPT. Defina a profundidade, o valor de $N_{SPT}$ e o tipo de solo predominante (Areia, Silte, Argila e suas variações).
+
+    #### 2. Configuração da Fundação e Critérios
+    * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâmetro da seção circular.
+    * **Nível d'Água (N.A.):** Marque a opção de lençol freático e insira a cota do N.A., se aplicável, para considerar as reduções de resistência submersa.
+    * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$):
+      * **Média dos Métodos:** Média aritmética dos resultados.
+      * **Menor Valor:** Adota a menor resistência encontrada (mais conservador).
+      * **Métodos Isolados:** Aoki-Velloso, Décourt-Quaresma ou Teixeira.
+
+    #### 3. Sincronização e Relatório
+    * **Integração Automática:** Ao finalizar a inserção dos dados do terreno, o projeto é guardado automaticamente na memória do sistema (`st.session_state`).
+    * **Ficheiro do Projeto (.utea):** Faça o download do ficheiro `.utea` para guardar o histórico no seu computador.
+    * **Relatório Geotécnico (PDF):** Gere o documento PDF completo contendo os perfis de sondagem e gráficos de capacidade de carga.
+    """)
+
 # -----------------------------------------------------------------------------
 # COLUNA ESQUERDA: IMPORTAÇÃO E EDIÇÃO
 # -----------------------------------------------------------------------------
