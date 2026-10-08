@@ -215,7 +215,6 @@ if upload_proj is not None:
         json_lido = upload_proj.read().decode('utf-8')
         sucesso = carregar_projeto_json(json_lido)
         if sucesso:
-            # Atualiza a memória partilhada após upload
             st.session_state['projeto_geotecnico'] = json.loads(exportar_projeto_json())
             st.sidebar.success("Projeto carregado com sucesso!")
             st.rerun()
@@ -223,7 +222,7 @@ if upload_proj is not None:
             st.sidebar.error("Erro ao carregar o arquivo. Formato inválido.")
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE DESENHO E RESTO DO CÓDIGO INALTERADO...
+# FUNÇÕES DE DESENHO E RESTO DO CÓDIGO
 # -----------------------------------------------------------------------------
 def plot_secao_transversal(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm):
     fig, ax = plt.subplots(figsize=(4, 4))
@@ -292,7 +291,10 @@ def plot_perfil_longitudinal(B_m, comp_estaca, L_armadura, espacamento_estribo_c
     ax.spines['right'].set_visible(False)
     ax.spines['bottom'].set_visible(False)
     
-    fig.tight_layout()
+    try:
+        fig.tight_layout()
+    except Exception:
+        fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
     return fig
 
 def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
@@ -320,7 +322,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
     ax.plot(M_vals, N_vals, color='#1E3A8A', lw=2, label='Envoltória Resistente')
     ax.fill_betweenx(N_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
     
-    ax.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante ($S_d$)')
+    ax.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante (Sd)')
     
     ax.axhline(0, color='black', linewidth=1)
     ax.axvline(0, color='black', linewidth=1)
@@ -329,6 +331,11 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
     ax.set_title('Diagrama de Interação (P-M)')
     ax.legend(fontsize=8)
     ax.grid(True, ls='--', alpha=0.5)
+    
+    try:
+        fig.tight_layout()
+    except Exception:
+        fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
     return fig
 
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
@@ -567,8 +574,8 @@ def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_
             M_vals.append(max(0, m))
             
         ax3.plot(M_vals, N_vals, color='#1E3A8A', lw=2, label='Envoltória Resistente')
-        ax3.fill_betweenx(N_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
-        ax3.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante ($S_d$)')
+        ax3.fill_betweenx(M_vals, M_vals, 0, color='#1E3A8A', alpha=0.1)
+        ax3.scatter([momento_max], [carga_V], color='red', zorder=5, s=60, edgecolors='black', label='Esforço Atuante (Sd)')
         ax3.axhline(0, color='black', linewidth=1)
         ax3.axvline(0, color='black', linewidth=1)
         ax3.set_xlabel('Momento Fletor (kN.m)')
@@ -577,7 +584,10 @@ def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_
         ax3.legend(fontsize=8)
         ax3.grid(True, ls='--', alpha=0.5)
 
-    fig.tight_layout()
+    try:
+        fig.tight_layout()
+    except Exception:
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.15)
     return fig
 
 # TÍTULO PRINCIPAL
@@ -775,7 +785,6 @@ with col_esq:
             "img": st.session_state.furo_atual_img
         }
         st.session_state.furo_atual_nome = nome_furo_input
-        # Atualiza a memória partilhada após guardar furo
         st.session_state['projeto_geotecnico'] = json.loads(exportar_projeto_json())
         st.success(f"Furo {nome_furo_input} guardado e sincronizado com o módulo BIM!")
     
