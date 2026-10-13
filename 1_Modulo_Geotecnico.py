@@ -1066,13 +1066,48 @@ def gerar_pdf_multiprojeto():
     story.append(Paragraph("<b>Projeto Geotécnico Consolidado - Múltiplos Furos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
     story.append(Spacer(1, 15))
 
+    # --- NOVO: Recalcular o resumo para o PDF ---
+    dados_resumo_pdf = []
+    recomendacao_pdf = ""
+    todos_spt_rasos_pdf = []
+    
+    for nome_furo, dados in st.session_state.projeto_furos.items():
+        comp_est_furo = dados.get("prof_estaca", 15.0)
+        calc = processar_calculos_estaca(dados["df"], comp_est_furo, L_armadura_manual, criterio_q_adm)
+        df_furo = calc["df_spt"]
+        prof_max = df_furo["Profundidade (m)"].max()
+        
+        spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
+        if not pd.isna(spt_rasos): todos_spt_rasos_pdf.append(spt_rasos)
+        
+        dados_resumo_pdf.append({
+            "Furo": nome_furo,
+            "Prof. Total (m)": prof_max,
+            "Aoki Máx (kN)": f"{calc['Q_adm_aoki']:.0f}",
+            "DQ Máx (kN)": f"{calc['Q_adm_dq']:.0f}",
+            "Teixeira Máx (kN)": f"{calc['Q_adm_t']:.0f}",
+            "Adotada Final (kN)": f"{calc['Q_adm_adotada']:.0f}"
+        })
+        
+    media_spt_raso = np.mean(todos_spt_rasos_pdf) if todos_spt_rasos_pdf else 0
+    if media_spt_raso < 5:
+        recomendacao_pdf += "**Terreno superficial mole/fofo:** A média de N_SPT nos primeiros 3 metros é muito baixa. **Recomendada Fundação Profunda (Estacas)**.\n\n"
+    elif media_spt_raso > 15:
+        recomendacao_pdf += "**Terreno superficial muito resistente:** Solo competente encontrado próximo à superfície. Viabilidade técnica para **Fundação Rasa (Sapatas/Radier)**.\n\n"
+    else:
+        recomendacao_pdf += "**Terreno superficial intermediário:** Fazer verificação de viabilidade económica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
+        
+    if tem_na and nivel_agua < 5.0:
+        recomendacao_pdf += f"**Atenção ao Nível d'Água:** O lençol freático foi detetado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evite estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz."
+    # ------------------------------------------
+
     story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
     story.append(Paragraph(f"<b>Critério de Segurança Adotado:</b> {criterio_q_adm}<br/>", body_style))
-    story.append(Paragraph(recomendacao.replace('\n', '<br/>'), body_style))
+    story.append(Paragraph(recomendacao_pdf.replace('\n', '<br/>').replace('**', '<b>').replace('**', '</b>'), body_style))
     story.append(Spacer(1, 10))
     
     dados_tab_resumo = [["Furo", "Prof. Máx.", "Aoki F.", "Décourt F.", "Teixeira F.", "Adotada F."]]
-    for f in dados_resumo:
+    for f in dados_resumo_pdf:
         dados_tab_resumo.append([f["Furo"], f"{f['Prof. Total (m)']}m", f"{f['Aoki Máx (kN)']} kN", f"{f['DQ Máx (kN)']} kN", f"{f['Teixeira Máx (kN)']} kN", f"{f['Adotada Final (kN)']} kN"])
         
     t_res_geral = Table(dados_tab_resumo, colWidths=[80, 50, 85, 85, 85, 95])
@@ -1091,7 +1126,8 @@ def gerar_pdf_multiprojeto():
         num_seccao = 2
 
     for nome_furo, dados in st.session_state.projeto_furos.items():
-        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+        comp_est_furo = dados.get("prof_estaca", 15.0)
+        res = processar_calculos_estaca(dados["df"], comp_est_furo, L_armadura_manual, criterio_q_adm)
         
         story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
         story.append(Spacer(1, 10))
