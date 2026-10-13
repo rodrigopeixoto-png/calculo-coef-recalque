@@ -8,7 +8,6 @@ import tempfile
 import os
 import json
 
-# Importações para o PDF Profissional
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -53,7 +52,7 @@ PARAMETROS_SOLO = {
 def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
 def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo, tem_atrito_neg=False, h_aterro=0.0):
+def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -81,17 +80,17 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     df_spt["delta_Rl_t"] = (beta_t * df_spt["N_corr"] * Perimetro)
     df_spt["Rp_t"] = (df_spt["alpha_teix"] * df_spt["N_corr"] * Area_c)
 
-    # --- SEPARAÇÃO DO ATRITO NEGATIVO ---
+    # --- SEPARAÇÃO DO ATRITO NEGATIVO AUTOMÁTICO ---
     p_neg_estaca = 0.0
-    if tem_atrito_neg and h_aterro > 0:
-        mascara_aterro = df_spt["Profundidade (m)"] <= h_aterro
-        
+    mascara_aterro = df_spt["Tipo de Solo"] == "Aterro"
+    max_aterro = df_spt[mascara_aterro]["Profundidade (m)"].max() if mascara_aterro.any() else 0.0
+    
+    if max_aterro > 0:
         p_neg_aoki = df_spt.loc[mascara_aterro, "delta_Rl_aoki"].sum()
         p_neg_dq = df_spt.loc[mascara_aterro, "delta_Rl_dq"].sum()
         p_neg_t = df_spt.loc[mascara_aterro, "delta_Rl_t"].sum()
         p_neg_estaca = (p_neg_aoki + p_neg_dq + p_neg_t) / 3.0 if criterio == "Média dos Métodos" else max(p_neg_aoki, p_neg_dq, p_neg_t)
 
-        # Zera a resistência lateral no aterro
         df_spt.loc[mascara_aterro, "delta_Rl_aoki"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_t"] = 0.0
@@ -105,9 +104,8 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
 
     col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor (Mais Conservador)" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
 
-    # A carga alvo total que a estaca precisa resistir no solo firme:
     carga_alvo_efetiva = carga_alvo_kn + p_neg_estaca
-    limite_prof_min = max(prof_minima, (h_aterro + 1.0) if tem_atrito_neg else prof_minima)
+    limite_prof_min = max(prof_minima, max_aterro + 1.0)
 
     df_suficiente = df_spt[(df_spt[col_adotada] >= carga_alvo_efetiva) & (df_spt["Profundidade (m)"] >= limite_prof_min)]
     
@@ -138,7 +136,7 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     else:
         prof_calc = df_spt["Profundidade (m)"].max()
         
-    return max(prof_calc, limite_prof_min), p_neg_estaca
+    return max(prof_calc, limite_prof_min), p_neg_estaca, max_aterro
 
 def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
     Area_c = (np.pi * diametro_m**2) / 4
@@ -393,7 +391,7 @@ def gerar_modelo_ifc(df_projeto):
 # -----------------------------------------------------------------------------
 # MOTOR DE GERAÇÃO DO MEMORIAL (PDF) PILAR A PILAR
 # -----------------------------------------------------------------------------
-def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_atrito_neg, h_aterro):
+def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -422,9 +420,10 @@ def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_a
     df_spt["Rp_t"] = (df_spt["alpha_teix"] * df_spt["N_corr"] * Area_c)
 
     p_neg_estaca = 0.0
-    if tem_atrito_neg and h_aterro > 0:
-        mascara_aterro = df_spt["Profundidade (m)"] <= h_aterro
-        
+    mascara_aterro = df_spt["Tipo de Solo"] == "Aterro"
+    max_aterro = df_spt[mascara_aterro]["Profundidade (m)"].max() if mascara_aterro.any() else 0.0
+    
+    if max_aterro > 0:
         p_neg_aoki = df_spt.loc[mascara_aterro, "delta_Rl_aoki"].sum()
         p_neg_dq = df_spt.loc[mascara_aterro, "delta_Rl_dq"].sum()
         p_neg_t = df_spt.loc[mascara_aterro, "delta_Rl_t"].sum()
@@ -442,10 +441,10 @@ def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_a
     df_spt["Rc Menor"] = df_spt[["Rc Aoki", "Rc DQ", "Rc Teix"]].min(axis=1)
 
     linha = df_spt[df_spt["Profundidade (m)"] >= prof_alvo].head(1)
-    if len(linha) > 0: return linha.iloc[0], p_neg_estaca
-    return df_spt.iloc[-1], p_neg_estaca
+    if len(linha) > 0: return linha.iloc[0], p_neg_estaca, max_aterro
+    return df_spt.iloc[-1], p_neg_estaca, max_aterro
 
-def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, criterio, prof_minima, verificar_bulbo, tem_atrito_neg, h_aterro):
+def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, criterio, prof_minima, verificar_bulbo):
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     story, styles = [], getSampleStyleSheet()
@@ -464,7 +463,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
     txt_param += f"• <b>Critério Geotécnico de Resistência:</b> {criterio}<br/>"
     txt_param += f"• <b>Profundidade Mínima Fixada:</b> {prof_minima} m<br/>"
     txt_param += f"• <b>Verificação da Zona de Influência (Bulbo de Tensões):</b> {'Ativada (Evita assentamento sobre camadas moles subjacentes)' if verificar_bulbo else 'Desativada'}<br/>"
-    txt_param += f"• <b>Atrito Negativo (Aterro):</b> {'Considerado (Espessura: ' + str(h_aterro) + 'm)' if tem_atrito_neg else 'Não Considerado'}<br/>"
+    txt_param += f"• <b>Atrito Negativo:</b> Detetado e anulado automaticamente para camadas lançadas como 'Aterro'.<br/>"
     story.append(Paragraph(txt_param, body_style))
     story.append(Spacer(1, 10))
 
@@ -500,7 +499,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
         prof = row['Profundidade_m']
         
         if df_spt_atual is not None:
-            cota_info, p_neg = obter_capacidades_na_cota(df_spt_atual, diam, prof, criterio, tem_atrito_neg, h_aterro)
+            cota_info, p_neg, h_aterro = obter_capacidades_na_cota(df_spt_atual, diam, prof, criterio)
             solo_tipo = cota_info["Tipo de Solo"]
             nspt = cota_info["N_SPT"]
             rc_aoki = cota_info["Rc Aoki"]
@@ -508,7 +507,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
             rc_tx = cota_info["Rc Teix"]
             rc_adotada = cota_info["Rc Média"] if criterio == "Média dos Métodos" else (cota_info["Rc Menor"] if criterio == "Menor Valor (Mais Conservador)" else (cota_info["Rc Aoki"] if "Aoki" in criterio else (cota_info["Rc DQ"] if "Décourt" in criterio else cota_info["Rc Teix"])))
         else:
-            solo_tipo, nspt, rc_aoki, rc_dq, rc_tx, rc_adotada, p_neg = "Desconhecido", 0, 0, 0, 0, 0, 0.0
+            solo_tipo, nspt, rc_aoki, rc_dq, rc_tx, rc_adotada, p_neg, h_aterro = "Desconhecido", 0, 0, 0, 0, 0, 0.0, 0.0
             
         t_header = Table([[Paragraph(f"<b>BLOCO DO PILAR {nome_pilar}</b> | {ne} Estaca(s) de Ø {diam*100:.0f} cm", pilar_title)]], colWidths=[540])
         t_header.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#1E3A8A')), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
@@ -516,10 +515,10 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
 
         dados_pilar = f"""<b>1. Esforços e Geometria</b><br/>
         Carga Total do Bloco (Catálogo): {carga_tot:.1f} tf<br/>
-        Carga de Cálculo por Estaca (S_d): <b>{carga_est:.1f} kN</b><br/>"""
+        Carga Estrutural (S_d): <b>{carga_est:.1f} kN</b><br/>"""
         
-        if tem_atrito_neg:
-            dados_pilar += f"Atrito Negativo (Arrasto - P_neg): <font color='red'><b>{p_neg:.1f} kN</b></font><br/>"
+        if p_neg > 0:
+            dados_pilar += f"Atrito Negativo (Arrasto - P_neg no Aterro de {h_aterro}m): <font color='red'><b>{p_neg:.1f} kN</b></font><br/>"
             dados_pilar += f"Carga Total de Projeto (S_d + P_neg): <b>{carga_total_resistir:.1f} kN</b><br/>"
             
         dados_pilar += f"Profundidade Adotada: <b>{prof:.1f} m</b> (Limitador Mínimo: {prof_minima}m)<br/><br/>"
@@ -578,7 +577,8 @@ with st.expander("📖 Guia de Utilização - Módulo Estrutural & BIM 5D", expa
 
     #### 2. Configuração de Materiais e Radar de Bulbo
     * **👁️ Radar do Bulbo de Tensões:** Mantendo ativado, o algoritmo inspeciona a zona de influência (mínimo de 3x o diâmetro) abaixo da ponta das estacas. Se detetar solos moles ($N_{SPT} \le 3$) ou perda acentuada de resistência, forçará o aprofundamento para evitar assentamentos.
-    * **Concreto e Armaduras:** Configure a classe de concreto ($F_{ck}$), a taxa de aço longitudinal, bitolas e espaçamento dos estribos. Os valores definidos no Módulo Geotécnico são herdados automaticamente.
+    * **Atrito Negativo (Aterro):** O sistema lê automaticamente a tabela do ensaio. Se detectar a camada de 'Aterro', ele subtrai a resistência lateral dessa cota e adiciona-a como carga de projeto para as estacas.
+    * **Concreto e Armaduras:** Configure a classe de concreto ($F_{ck}$), a taxa de aço longitudinal, bitolas e espaçamento dos estribos.
 
     #### 3. Análise Visual e Memória
     * **Resumo Executivo:** Veja o volume total de concreto escavado, metragem de perfuração e peso total de aço ($CA50/CA60$).
@@ -631,9 +631,6 @@ st.sidebar.header("3️⃣ Configuração Estrutural e Materiais")
 if config_memoria: st.sidebar.success("✅ Materiais e Armaduras sincronizados!")
 
 verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True, help="Varre camadas subjacentes para evitar que a estaca pare sobre solos moles.")
-
-tem_atrito_neg = st.sidebar.checkbox("🚜 Considerar Atrito Negativo (Aterro)?", value=config_memoria.get("tem_atrito_neg", False), help="Adiciona a força de arrasto do aterro sobre as estacas e força a ancoragem em solo competente.")
-h_aterro = st.sidebar.number_input("Espessura do Aterro (m)", min_value=0.5, max_value=20.0, value=float(config_memoria.get("h_aterro", 3.0)), step=0.5) if tem_atrito_neg else 0.0
 
 def_fck = int(config_memoria.get("fck", 25))
 def_taxa = float(config_memoria.get("taxa_armadura", 0.5))
@@ -707,7 +704,7 @@ if st.session_state.df_projeto is not None:
 
         for index, row in df.iterrows():
             if df_spt_atual is not None:
-                prof, p_neg = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo, tem_atrito_neg, h_aterro) 
+                prof, p_neg, _ = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo) 
             else:
                 prof = prof_minima_global
                 p_neg = 0.0
@@ -798,7 +795,7 @@ if st.session_state.df_projeto is not None:
 
         with col_btn2:
             try:
-                pdf_estrutural = gerar_memorial_estrutural_pdf(df, df_spt_atual, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo, tem_atrito_neg, h_aterro)
+                pdf_estrutural = gerar_memorial_estrutural_pdf(df, df_spt_atual, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo)
                 st.download_button(
                     label="📄 Baixar Memorial Estrutural (PDF)",
                     data=pdf_estrutural,
