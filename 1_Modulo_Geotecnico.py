@@ -345,7 +345,6 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     
-    # Corte inteligente das linhas não preenchidas no final da tabela
     df_spt = df_spt.dropna(subset=['N_SPT']).copy()
     if df_spt.empty:
         df_spt = pd.DataFrame({"Profundidade (m)": [1], "N_SPT": [1], "Tipo de Solo": ["Argila"]})
@@ -355,7 +354,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
-    # Profundidade baseada estritamente no tamanho da tabela preenchida
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
     comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
 
@@ -651,7 +649,7 @@ with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=Fal
 
     #### 2. Configuração da Fundação e Critérios
     * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâm. da seção circular.
-    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar no Módulo Estrutural.
+    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar.
     * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$).
 
     #### 3. Sincronização e Relatório
@@ -952,6 +950,22 @@ with col_dir:
                 if st.button("🗑️ Remover Croqui"):
                     st.session_state.croqui_img = None
                     st.rerun()
+
+        # O botão de PDF foi movido para a secção principal (Tab Resumo) de modo a não desaparecer da barra lateral
+        if len(st.session_state.projeto_furos) > 0:
+            st.markdown("---")
+            st.subheader("📄 Geração do Relatório PDF Geotécnico")
+            pdf_final_bytes = gerar_pdf_multiprojeto()
+            if pdf_final_bytes:
+                nome_arquivo_pdf = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20]
+                st.download_button(
+                    label="📥 Baixar Memorial Completo (PDF)",
+                    data=pdf_final_bytes,
+                    file_name=f"Memorial_Consolidado_{nome_arquivo_pdf}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
             
     with tab_atual:
         furos_disponiveis = {f"{nome_furo_input} (Em Edição na Tabela)": st.session_state.projeto_furos.get(nome_furo_input, {})}
@@ -1202,20 +1216,3 @@ def gerar_pdf_multiprojeto():
     doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
-
-st.sidebar.markdown("---")
-st.sidebar.header("📁 Geração do Relatório")
-if len(st.session_state.projeto_furos) > 0:
-    pdf_final_bytes = gerar_pdf_multiprojeto()
-    if pdf_final_bytes:
-        nome_arquivo_pdf = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20]
-        st.sidebar.download_button(
-            label="📄 Baixar Memorial Completo (PDF)",
-            data=pdf_final_bytes,
-            file_name=f"Memorial_Consolidado_{nome_arquivo_pdf}.pdf",
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True
-        )
-else:
-    st.sidebar.info("Salve furos no projeto para habilitar a geração do PDF.")
