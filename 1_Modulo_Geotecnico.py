@@ -67,6 +67,8 @@ if 'furo_atual_img' not in st.session_state:
     st.session_state.furo_atual_img = None
 if 'furo_atual_nome' not in st.session_state:
     st.session_state.furo_atual_nome = "SP-01"
+if 'furo_atual_prof' not in st.session_state:
+    st.session_state.furo_atual_prof = 15.0
 
 def exportar_projeto_json():
     dados = {
@@ -77,7 +79,8 @@ def exportar_projeto_json():
         img_b64 = base64.b64encode(info["img"]).decode('utf-8') if info["img"] else None
         dados["furos"][nome] = {
             "df": info["df"].to_dict(orient="records"),
-            "img": img_b64
+            "img": img_b64,
+            "prof_estaca": info.get("prof_estaca", 15.0)
         }
     if st.session_state.croqui_img:
         dados["croqui"] = base64.b64encode(st.session_state.croqui_img).decode('utf-8')
@@ -93,7 +96,8 @@ def carregar_projeto_json(json_str):
             img_bytes = base64.b64decode(info["img"]) if info.get("img") else None
             st.session_state.projeto_furos[nome] = {
                 "df": df, 
-                "img": img_bytes
+                "img": img_bytes,
+                "prof_estaca": info.get("prof_estaca", df["Profundidade (m)"].max())
             }
             
         if dados.get("croqui"):
@@ -148,10 +152,6 @@ st.sidebar.markdown("---")
 st.sidebar.header("💧 Condições do Lençol Freático")
 tem_na = st.sidebar.checkbox("Considerar Nível d'Água (N.A.)?", value=False)
 nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, value=3.0, step=0.5) if tem_na else 999.0
-
-st.sidebar.markdown("---")
-st.sidebar.header("🚜 Atrito Negativo (Aterro)")
-st.sidebar.info("A profundidade do aterro é detectada **automaticamente** ao classificar a camada como 'Aterro' na tabela do furo. O programa anulará o atrito lateral nessas cotas e calculará o arrasto descendente.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
@@ -342,7 +342,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
         fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
     return fig
 
-def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
+def processar_calculos_estaca(df_original, comp_estaca_furo, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -350,7 +350,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
-    comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
+    comp_estaca_efetivo = min(comp_estaca_furo, max(0.0, prof_maxima_furo - cota_assentamento)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 
     Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
     Inercia_c = (np.pi * B**4) / 64 if secao == "Circular" else (B**4) / 12
@@ -408,6 +408,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         mascara_aterro = df_inf["Tipo de Solo"] == "Aterro"
         max_aterro = df_inf[mascara_aterro]["Profundidade (m)"].max() if mascara_aterro.any() else 0.0
         
+        # O P_neg mostrado aqui será o somatório até à base do aterro
         P_neg_aoki, P_neg_dq, P_neg_t = 0.0, 0.0, 0.0
 
         if max_aterro > 0:
@@ -667,6 +668,7 @@ with col_esq:
             st.session_state.furo_atual_nome = sel
             st.session_state.furo_atual_df = st.session_state.projeto_furos[sel]["df"].copy()
             st.session_state.furo_atual_img = st.session_state.projeto_furos[sel]["img"]
+            st.session_state.furo_atual_prof = st.session_state.projeto_furos[sel].get("prof_estaca", st.session_state.projeto_furos[sel]["df"]["Profundidade (m)"].max())
         else:
             num_novo = len(st.session_state.projeto_furos) + 1
             st.session_state.furo_atual_nome = f"SP-{num_novo:02d}"
@@ -676,6 +678,7 @@ with col_esq:
                 "Tipo de Solo": ["Argila"] * 15
             })
             st.session_state.furo_atual_img = None
+            st.session_state.furo_atual_prof = 15.0
 
     opcoes_furos = ["-- Novo Furo --"] + list(st.session_state.projeto_furos.keys())
     st.selectbox(
@@ -686,6 +689,14 @@ with col_esq:
     )
     
     nome_furo_input = st.text_input("📌 Nome do Furo (Atual):", value=st.session_state.furo_atual_nome)
+    
+    st.session_state.furo_atual_prof = st.number_input(
+        "Profundidade Desejada para a Estaca (m):", 
+        min_value=1.0, 
+        value=st.session_state.furo_atual_prof, 
+        step=0.5,
+        help="Defina até que profundidade deseja avaliar a estaca neste furo específico."
+    )
     
     st.info("Para contornar os limites gratuitos da IA, experimente o nosso Leitor Offline ou copie e cole os dados diretamente do Excel na tabela!")
     
@@ -840,11 +851,12 @@ with col_esq:
     if st.button(f"💾 Guardar {nome_furo_input} no Projeto", type="primary", width="stretch"):
         st.session_state.projeto_furos[nome_furo_input] = {
             "df": df_editado.copy(),
-            "img": st.session_state.furo_atual_img
+            "img": st.session_state.furo_atual_img,
+            "prof_estaca": st.session_state.furo_atual_prof
         }
         st.session_state.furo_atual_nome = nome_furo_input
         st.session_state['projeto_geotecnico'] = json.loads(exportar_projeto_json())
-        st.success(f"Furo {nome_furo_input} guardado e sincronizado!")
+        st.success(f"Furo {nome_furo_input} guardado com prof. {st.session_state.furo_atual_prof}m e sincronizado!")
     
     st.markdown("---")
     st.subheader("🗺️ 2. Adicionar Croqui de Locação")
@@ -902,7 +914,8 @@ with col_dir:
             todos_spt_rasos = []
             
             for nome_furo, dados in st.session_state.projeto_furos.items():
-                calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+                comp_est_furo = dados.get("prof_estaca", 15.0)
+                calc = processar_calculos_estaca(dados["df"], comp_est_furo, L_armadura_manual, criterio_q_adm)
                 df_furo = calc["df_spt"]
                 prof_max = df_furo["Profundidade (m)"].max()
                 
@@ -913,11 +926,12 @@ with col_dir:
                 
                 dados_resumo.append({
                     "Furo": nome_furo,
-                    "Prof. Total (m)": prof_max,
-                    "Aoki Máx (kN)": f"{calc['Q_adm_aoki']:.0f}",
-                    "DQ Máx (kN)": f"{calc['Q_adm_dq']:.0f}",
-                    "Teixeira Máx (kN)": f"{calc['Q_adm_t']:.0f}",
-                    "Adotada Final (kN)": f"{calc['Q_adm_adotada']:.0f}"
+                    "Prof. Estaca (m)": comp_est_furo,
+                    "Aoki (kN)": f"{calc['Q_adm_aoki']:.0f}",
+                    "Décourt-Q. (kN)": f"{calc['Q_adm_dq']:.0f}",
+                    "Teixeira (kN)": f"{calc['Q_adm_t']:.0f}",
+                    "Adotada (kN)": f"{calc['Q_adm_adotada']:.0f}",
+                    "Status": status_geo
                 })
             
             st.table(pd.DataFrame(dados_resumo))
@@ -956,10 +970,12 @@ with col_dir:
         dados_furo_view = furos_disponiveis[furo_selecionado_visualizacao]
         if "df" in dados_furo_view:
             df_view = dados_furo_view["df"]
+            comp_view = dados_furo_view.get("prof_estaca", st.session_state.furo_atual_prof)
         else:
             df_view = df_editado
+            comp_view = st.session_state.furo_atual_prof
             
-        res_atual = processar_calculos_estaca(df_view, L_armadura_manual, criterio_q_adm)
+        res_atual = processar_calculos_estaca(df_view, comp_view, L_armadura_manual, criterio_q_adm)
         
         st.markdown(f"### 📊 Capacidade de Carga Geotécnica (Na Cota Máxima: {res_atual['comp_estaca_efetivo']}m)")
         c1, c2, c3, c4 = st.columns(4)
@@ -1050,9 +1066,9 @@ def gerar_pdf_multiprojeto():
     story.append(Paragraph(recomendacao.replace('\n', '<br/>'), body_style))
     story.append(Spacer(1, 10))
     
-    dados_tab_resumo = [["Furo", "Prof. Máx.", "Aoki F.", "Décourt F.", "Teixeira F.", "Adotada F."]]
+    dados_tab_resumo = [["Furo", "Prof.", "Aoki", "Décourt", "Teixeira", "Adotada"]]
     for f in dados_resumo:
-        dados_tab_resumo.append([f["Furo"], f"{f['Prof. Total (m)']}m", f"{f['Aoki Máx (kN)']} kN", f"{f['DQ Máx (kN)']} kN", f"{f['Teixeira Máx (kN)']} kN", f"{f['Adotada Final (kN)']} kN"])
+        dados_tab_resumo.append([f["Furo"], f"{f['Prof. Estaca (m)']}m", f"{f['Aoki (kN)']} kN", f"{f['Décourt-Q. (kN)']} kN", f"{f['Teixeira (kN)']} kN", f"{f['Adotada (kN)']} kN"])
         
     t_res_geral = Table(dados_tab_resumo, colWidths=[80, 50, 85, 85, 85, 95])
     t_res_geral.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
@@ -1070,7 +1086,8 @@ def gerar_pdf_multiprojeto():
         num_seccao = 2
 
     for nome_furo, dados in st.session_state.projeto_furos.items():
-        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+        comp_est_furo = dados.get("prof_estaca", 15.0)
+        res = processar_calculos_estaca(dados["df"], comp_est_furo, L_armadura_manual, criterio_q_adm)
         
         story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
         story.append(Spacer(1, 10))
