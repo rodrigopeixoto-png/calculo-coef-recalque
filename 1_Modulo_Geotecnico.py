@@ -349,9 +349,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
-    # -------------------------------------------------------------
-    # PROFUNDIDADE TOTAL DO FURO
-    # -------------------------------------------------------------
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
     comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
 
@@ -411,7 +408,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         mascara_aterro = df_inf["Tipo de Solo"] == "Aterro"
         max_aterro = df_inf[mascara_aterro]["Profundidade (m)"].max() if mascara_aterro.any() else 0.0
         
-        # O P_neg mostrado aqui será o somatório até à base do aterro
         P_neg_aoki, P_neg_dq, P_neg_t = 0.0, 0.0, 0.0
 
         if max_aterro > 0:
@@ -648,7 +644,7 @@ with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=Fal
 
     #### 2. Configuração da Fundação e Critérios
     * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâm. da seção circular.
-    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar no Módulo Estrutural.
+    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar.
     * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$).
 
     #### 3. Sincronização e Relatório
@@ -664,7 +660,32 @@ col_esq, col_dir = st.columns([1.2, 2])
 
 with col_esq:
     st.subheader("📥 1. Dados do Furo de Sondagem")
-    nome_furo_input = st.text_input("📌 Nome do Furo em Edição:", value=st.session_state.furo_atual_nome)
+    
+    def on_furo_change():
+        sel = st.session_state.sel_furo_edicao
+        if sel != "-- Novo Furo --":
+            st.session_state.furo_atual_nome = sel
+            st.session_state.furo_atual_df = st.session_state.projeto_furos[sel]["df"].copy()
+            st.session_state.furo_atual_img = st.session_state.projeto_furos[sel]["img"]
+        else:
+            num_novo = len(st.session_state.projeto_furos) + 1
+            st.session_state.furo_atual_nome = f"SP-{num_novo:02d}"
+            st.session_state.furo_atual_df = pd.DataFrame({
+                "Profundidade (m)": list(range(1, 16)),
+                "N_SPT": [None] * 15,
+                "Tipo de Solo": ["Argila"] * 15
+            })
+            st.session_state.furo_atual_img = None
+
+    opcoes_furos = ["-- Novo Furo --"] + list(st.session_state.projeto_furos.keys())
+    st.selectbox(
+        "📂 Carregar furo para edição:", 
+        opcoes_furos, 
+        key="sel_furo_edicao",
+        on_change=on_furo_change
+    )
+    
+    nome_furo_input = st.text_input("📌 Nome do Furo (Atual):", value=st.session_state.furo_atual_nome)
     
     st.info("Para contornar os limites gratuitos da IA, experimente o nosso Leitor Offline ou copie e cole os dados diretamente do Excel na tabela!")
     
@@ -887,6 +908,8 @@ with col_dir:
                 
                 spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
                 if not pd.isna(spt_rasos): todos_spt_rasos.append(spt_rasos)
+                
+                status_geo = "✅ OK" if calc["carga_V_total"] <= calc["Q_adm_adotada"] else "❌ FALHA"
                 
                 dados_resumo.append({
                     "Furo": nome_furo,
