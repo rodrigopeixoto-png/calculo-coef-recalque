@@ -345,6 +345,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     
+    # Corte inteligente das linhas não preenchidas no final da tabela
     df_spt = df_spt.dropna(subset=['N_SPT']).copy()
     if df_spt.empty:
         df_spt = pd.DataFrame({"Profundidade (m)": [1], "N_SPT": [1], "Tipo de Solo": ["Argila"]})
@@ -354,6 +355,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
+    # Profundidade baseada estritamente no tamanho da tabela preenchida
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
     comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
 
@@ -409,6 +411,7 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         df_inf["alpha_teix"] = df_inf["Tipo de Solo"].apply(get_teix_alpha)
         df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
 
+        # --- SEPARAÇÃO DO ATRITO NEGATIVO AUTOMÁTICO ---
         mascara_aterro = df_inf["Tipo de Solo"] == "Aterro"
         max_aterro = df_inf[mascara_aterro]["Profundidade (m)"].max() if mascara_aterro.any() else 0.0
         
@@ -648,7 +651,7 @@ with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=Fal
 
     #### 2. Configuração da Fundação e Critérios
     * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâm. da seção circular.
-    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar.
+    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar no Módulo Estrutural.
     * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$).
 
     #### 3. Sincronização e Relatório
