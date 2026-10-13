@@ -154,11 +154,6 @@ tem_na = st.sidebar.checkbox("Considerar Nível d'Água (N.A.)?", value=False)
 nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, value=3.0, step=0.5) if tem_na else 999.0
 
 st.sidebar.markdown("---")
-st.sidebar.header("🚜 Atrito Negativo (Aterro / Adensamento)")
-tem_atrito_neg = st.sidebar.checkbox("Considerar Atrito Negativo?", value=False, help="Anula a resistência de fuste na camada de aterro e soma o atrito descendente à carga.")
-h_aterro = st.sidebar.number_input("Espessura do Aterro / Solo Mole (m)", min_value=0.5, max_value=20.0, value=3.0, step=0.5) if tem_atrito_neg else 0.0
-
-st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
 fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
@@ -198,9 +193,7 @@ st.session_state['params_globais'] = {
     "bitola_estribo": bitola_estribo,
     "espacamento_estribo": espacamento_estribo,
     "L_armadura_manual": L_armadura_manual,
-    "criterio_q_adm": criterio_q_adm,
-    "tem_atrito_neg": tem_atrito_neg,
-    "h_aterro": h_aterro
+    "criterio_q_adm": criterio_q_adm
 }
 
 st.sidebar.markdown("---")
@@ -349,16 +342,13 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
         fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
     return fig
 
-def processar_calculos_estaca(df_original, comp_estaca_furo, l_arm_manual=None, criterio="Média dos Métodos", tem_atrito_neg=False, h_aterro=0.0):
+def processar_calculos_estaca(df_original, comp_estaca_furo, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
-    # -------------------------------------------------------------
-    # LIMITADOR INTELIGENTE DE PROFUNDIDADE (MÁXIMO DO FURO VS DEFINIDO)
-    # -------------------------------------------------------------
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
     comp_estaca_efetivo = min(comp_estaca_furo, max(0.0, prof_maxima_furo - cota_assentamento)) if tipo_fundacao == "Profunda (Estaca)" else 0.0
 
