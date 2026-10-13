@@ -22,7 +22,7 @@ from reportlab.lib import colors
 # DICIONÁRIO GEOTÉCNICO DE SOLOS E CONSTANTES
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
-    "Aterro":                {"aoki_K": 0,    "aoki_alpha": 0.000, "alpha_k": 800,  "comportamento": "intermediario"},
+    "Aterro":                {"aoki_K": 400,  "aoki_alpha": 0.030, "alpha_k": 1000, "comportamento": "intermediario"},
     "Areia":                 {"aoki_K": 1000, "aoki_alpha": 0.014, "alpha_k": 3000, "comportamento": "granular"},
     "Areia Siltosa":         {"aoki_K": 800,  "aoki_alpha": 0.020, "alpha_k": 2800, "comportamento": "granular"},
     "Areia Silto-argilosa":  {"aoki_K": 700,  "aoki_alpha": 0.024, "alpha_k": 2500, "comportamento": "granular"},
@@ -147,6 +147,11 @@ tem_na = st.sidebar.checkbox("Considerar Nível d'Água (N.A.)?", value=False)
 nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, value=3.0, step=0.5) if tem_na else 999.0
 
 st.sidebar.markdown("---")
+st.sidebar.header("🚜 Atrito Negativo (Aterro / Adensamento)")
+tem_atrito_neg = st.sidebar.checkbox("Considerar Atrito Negativo?", value=False, help="Anula a resistência de fuste na camada de aterro e soma o atrito descendente à carga.")
+h_aterro = st.sidebar.number_input("Espessura do Aterro / Solo Mole (m)", min_value=0.5, max_value=20.0, value=3.0, step=0.5) if tem_atrito_neg else 0.0
+
+st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
 fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
@@ -188,7 +193,9 @@ st.session_state['params_globais'] = {
     "bitola_estribo": bitola_estribo,
     "espacamento_estribo": espacamento_estribo,
     "L_armadura_manual": L_armadura_manual,
-    "criterio_q_adm": criterio_q_adm
+    "criterio_q_adm": criterio_q_adm,
+    "tem_atrito_neg": tem_atrito_neg,
+    "h_aterro": h_aterro
 }
 
 st.sidebar.markdown("---")
@@ -338,7 +345,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
         fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
     return fig
 
-def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
+def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos", tem_atrito_neg=False, h_aterro=0.0):
     df_spt = df_original.copy()
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -390,22 +397,48 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_inf = df_spt[(df_spt["Profundidade (m)"] > cota_assentamento) & (df_spt["Profundidade (m)"] <= cota_fim)].copy()
 
     if not df_inf.empty:
-        df_inf["Rl_Aoki_Acum"] = df_inf["delta_Rl (kN)"].cumsum()
-        df_inf["Rc Adm Aoki (kN)"] = (df_inf["Rp (kN)"] + df_inf["Rl_Aoki_Acum"]) / 2.0
-        
+        # Atrito de Décourt e Teixeira (antes do arrasto negativo)
         df_inf["N_dq"] = df_inf["N_corr"].apply(lambda x: max(3, min(x, 50)))
         df_inf["C_dq"] = df_inf["Tipo de Solo"].apply(get_dq_c)
         df_inf["delta_Rl_dq"] = beta_dq * 10 * ((df_inf["N_dq"] / 3) + 1) * Perimetro * 1.0
+        
+        df_inf["alpha_teix"] = df_inf["Tipo de Solo"].apply(get_teix_alpha)
+        df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
+
+        # --- SEPARAÇÃO DO ATRITO NEGATIVO ---
+        P_neg_aoki = 0.0
+        P_neg_dq = 0.0
+        P_neg_t = 0.0
+
+        if tem_atrito_neg and h_aterro > 0:
+            mascara_aterro = df_inf["Profundidade (m)"] <= (cota_assentamento + h_aterro)
+            
+            P_neg_aoki = df_inf.loc[mascara_aterro, "delta_Rl (kN)"].sum()
+            P_neg_dq = df_inf.loc[mascara_aterro, "delta_Rl_dq"].sum()
+            P_neg_t = df_inf.loc[mascara_aterro, "delta_Rl_t"].sum()
+            
+            # Zera a resistência lateral no aterro
+            df_inf.loc[mascara_aterro, "delta_Rl (kN)"] = 0.0
+            df_inf.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
+            df_inf.loc[mascara_aterro, "delta_Rl_t"] = 0.0
+
+        P_neg_adotado = (P_neg_aoki + P_neg_dq + P_neg_t) / 3.0 if criterio == "Média dos Métodos" else max(P_neg_aoki, P_neg_dq, P_neg_t)
+        if not tem_atrito_neg:
+            P_neg_adotado = 0.0
+
+        # Somas Acumuladas
+        df_inf["Rl_Aoki_Acum"] = df_inf["delta_Rl (kN)"].cumsum()
+        df_inf["Rc Adm Aoki (kN)"] = (df_inf["Rp (kN)"] + df_inf["Rl_Aoki_Acum"]) / 2.0
+        
         df_inf["Rl_DQ_Acum"] = df_inf["delta_Rl_dq"].cumsum()
         df_inf["Rp_dq"] = alfa_dq * df_inf["C_dq"] * df_inf["N_corr"] * Area_c
         df_inf["Rc Adm DQ (kN)"] = (df_inf["Rp_dq"] + df_inf["Rl_DQ_Acum"]) / 2.0
         
-        df_inf["alpha_teix"] = df_inf["Tipo de Solo"].apply(get_teix_alpha)
-        df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
         df_inf["Rl_T_Acum"] = df_inf["delta_Rl_t"].cumsum()
         df_inf["Rp_t"] = df_inf["alpha_teix"] * df_inf["N_corr"] * Area_c
         df_inf["Rc Adm Teix (kN)"] = (df_inf["Rp_t"] + df_inf["Rl_T_Acum"]) / 2.0
 
+        # Adoção de Critérios
         df_inf["Rc Adm Média (kN)"] = (df_inf["Rc Adm Aoki (kN)"] + df_inf["Rc Adm DQ (kN)"] + df_inf["Rc Adm Teix (kN)"]) / 3.0
         df_inf["Rc Adm Menor (kN)"] = df_inf[["Rc Adm Aoki (kN)", "Rc Adm DQ (kN)", "Rc Adm Teix (kN)"]].min(axis=1)
 
@@ -429,6 +462,10 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         df_inf = df_spt.head(1).copy()
         df_inf["Rc Adm Aoki (kN)"] = df_inf["Rc Adm DQ (kN)"] = df_inf["Rc Adm Teix (kN)"] = df_inf["Rc Adm Média (kN)"] = df_inf["Rc Adm Adotada (kN)"] = 0
         Q_adm_aoki = Q_adm_dq = Q_adm_t = Q_adm_media = Q_adm_adotada = 0
+        P_neg_adotado = 0.0
+
+    # Adiciona a Carga de Arrasto à Carga do Pilar
+    carga_V_total = carga_V + P_neg_adotado
 
     kh_global = df_inf["kh (kN/m³)"].mean() if not df_inf.empty else 0
     kv_global = df_inf["kv (kN/m³)"].mean() if not df_inf.empty else 0
@@ -447,7 +484,9 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     f_ctk_inf = 0.21 * (fck ** (2/3)) * 1000 
     W_c = Inercia_c / (B / 2) 
     alpha_flexao = 1.5 if secao == "Quadrada" else 1.2
-    M_cr = W_c * (alpha_flexao * f_ctk_inf + (carga_V / Area_c)) 
+    
+    # A verificação de fissuração leva em conta a Carga Efetiva Total
+    M_cr = W_c * (alpha_flexao * f_ctk_inf + (carga_V_total / Area_c)) 
 
     idx_max_m = np.argmax(np.abs(m_flet))
     m_apos_max = np.abs(m_flet[idx_max_m:])
@@ -480,6 +519,8 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         "df_spt": df_spt, "df_inf": df_inf, 
         "Q_adm_aoki": Q_adm_aoki, "Q_adm_dq": Q_adm_dq, "Q_adm_t": Q_adm_t, "Q_adm_media": Q_adm_media,
         "Q_adm_adotada": Q_adm_adotada,
+        "P_neg": P_neg_adotado,
+        "carga_V_total": carga_V_total,
         "kv_global": kv_global, "kh_global": kh_global,
         "momento_max_atuante": momento_max_atuante, "momento_max_unit": momento_max_unit,
         "M_rd": M_rd, "H_rd": H_rd, "deslocamento_max_mm": deslocamento_max_mm,
@@ -608,12 +649,9 @@ with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=Fal
     * **Perfil Geotécnico:** Introduza as camadas de solo do ensaio SPT. Defina a profundidade, o valor de $N_{SPT}$ e o tipo de solo predominante (Areia, Silte, Argila e suas variações).
 
     #### 2. Configuração da Fundação e Critérios
-    * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâmetro da seção circular.
-    * **Nível d'Água (N.A.):** Marque a opção de lençol freático e insira a cota do N.A., se aplicável, para considerar as reduções de resistência submersa.
-    * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$):
-      * **Média dos Métodos:** Média aritmética dos resultados.
-      * **Menor Valor:** Adota a menor resistência encontrada (mais conservador).
-      * **Métodos Isolados:** Aoki-Velloso, Décourt-Quaresma ou Teixeira.
+    * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâm. da seção circular.
+    * **Atrito Negativo (Aterro):** Se houver camadas moles ou aterros adensáveis, defina a espessura na aba de atrito negativo. A resistência desse trecho será anulada e o arrasto será somado à carga do pilar.
+    * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$).
 
     #### 3. Sincronização e Relatório
     * **Integração Automática:** Ao finalizar a inserção dos dados do terreno, o projeto é guardado automaticamente na memória do sistema (`st.session_state`).
@@ -844,14 +882,14 @@ with col_dir:
             todos_spt_rasos = []
             
             for nome_furo, dados in st.session_state.projeto_furos.items():
-                calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+                calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm, tem_atrito_neg, h_aterro)
                 df_furo = calc["df_spt"]
                 prof_max = df_furo["Profundidade (m)"].max()
                 
                 spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
                 if not pd.isna(spt_rasos): todos_spt_rasos.append(spt_rasos)
                 
-                status_geo = "✅ OK" if carga_V <= calc["Q_adm_adotada"] else "❌ FALHA"
+                status_geo = "✅ OK" if calc["carga_V_total"] <= calc["Q_adm_adotada"] else "❌ FALHA"
                 
                 dados_resumo.append({
                     "Furo": nome_furo,
@@ -895,7 +933,7 @@ with col_dir:
             furos_disponiveis[f"{k} (Salvo no Projeto)"] = v["df"]
             
         furo_selecionado_visualizacao = st.selectbox("🔍 Escolha qual furo visualizar nos gráficos:", list(furos_disponiveis.keys()))
-        res_atual = processar_calculos_estaca(furos_disponiveis[furo_selecionado_visualizacao], L_armadura_manual, criterio_q_adm)
+        res_atual = processar_calculos_estaca(furos_disponiveis[furo_selecionado_visualizacao], L_armadura_manual, criterio_q_adm, tem_atrito_neg, h_aterro)
         
         st.markdown(f"### 📊 Capacidade de Carga Geotécnica")
         c1, c2, c3, c4 = st.columns(4)
@@ -923,7 +961,7 @@ with col_dir:
             B, secao, res_atual['n_barras'], bitola, bitola_estribo, 
             comprimento_estaca, res_atual['L_armadura'], espacamento_estribo, 
             res_atual['M_rd'], fck, fyk, res_atual['Area_c'], res_atual['As_total'], 
-            carga_V, res_atual['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
+            res_atual['carga_V_total'], res_atual['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
         )
         st.pyplot(fig_estrutural)
         
@@ -934,7 +972,7 @@ with col_dir:
         ax1.plot(res_atual["df_inf"]["Rc Adm DQ (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
         ax1.plot(res_atual["df_inf"]["Rc Adm Teix (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange", alpha=0.3)
         ax1.plot(res_atual["df_inf"]["Rc Adm Adotada (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Adotada", color="black", linewidth=2.5, linestyle=':')
-        ax1.axvline(x=carga_V, color='red', linestyle='--')
+        ax1.axvline(x=res_atual['carga_V_total'], color='red', linestyle='--')
         ax1.set_title("Resistência (kN)")
         ax1.invert_yaxis()
         ax1.grid(True, ls="--", alpha=0.5)
@@ -1008,7 +1046,7 @@ def gerar_pdf_multiprojeto():
         num_seccao = 2
 
     for nome_furo, dados in st.session_state.projeto_furos.items():
-        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm, tem_atrito_neg, h_aterro)
         
         story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
         story.append(Spacer(1, 10))
@@ -1026,6 +1064,10 @@ def gerar_pdf_multiprojeto():
         txt_geo += f"<b>Solo-Estrutura:</b> K_h Global = {res['kh_global']:,.0f} kN/m³ | K_v Global = {res['kv_global']:,.0f} kN/m³<br/>"
         txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm (Comp. Gaiola: {res['L_armadura']:.2f} m) | <b>Armadura Transv.:</b> {res['qtd_estribos']} Estribos Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
         txt_geo += f"<b>Quantitativos da Estaca:</b> Volume de Concreto = {res['V_concreto']:.2f} m³ | Peso Total de Aço = {res['peso_aco_total']:.1f} kg<br/>"
+        
+        if tem_atrito_neg:
+            txt_geo += f"<b>Atrito Negativo (Aterro {h_aterro}m):</b> Arrasto Descendente (P<sub>neg</sub>) = <font color='red'><b>{res['P_neg']:.1f} kN</b></font> | Carga Total Efetiva na Estaca = <b>{res['carga_V_total']:.1f} kN</b><br/>"
+            
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
 
@@ -1033,7 +1075,7 @@ def gerar_pdf_multiprojeto():
             B, secao, res['n_barras'], bitola, bitola_estribo, 
             comprimento_estaca, res['L_armadura'], espacamento_estribo, 
             res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], 
-            carga_V, res['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
+            res['carga_V_total'], res['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
         )
         buf_est = io.BytesIO()
         fig_estrutural.savefig(buf_est, format='png', dpi=150, bbox_inches='tight')
@@ -1130,14 +1172,14 @@ def gerar_pdf_multiprojeto():
         ax1.plot(res["df_inf"]["Rc Adm DQ (kN)"], res["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
         ax1.plot(res["df_inf"]["Rc Adm Teix (kN)"], res["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange", alpha=0.3)
         ax1.plot(res["df_inf"]["Rc Adm Adotada (kN)"], res["df_inf"]["Profundidade (m)"], label="Adotada", color="black", linewidth=2.5, linestyle=':')
-        ax1.axvline(x=carga_V, color='red', linestyle='--')
+        ax1.axvline(x=res['carga_V_total'], color='red', linestyle='--')
         ax1.invert_yaxis(); ax1.set_title("Resistência (kN)"); ax1.grid(True, ls="--", alpha=0.5); ax1.legend(fontsize=7)
         
         ax2.plot(res["m_flet"], res["z_vals"], color="red")
         ax2.axvline(x=res["M_rd"], color='darkred', linestyle='--')
         ax2.invert_yaxis(); ax2.set_title("Momento Fletor"); ax2.grid(True, ls="--", alpha=0.5)
         
-        ax3.plot(res_atual["y_disp"]*1000, res_atual["z_vals"], color="blue")
+        ax3.plot(res["y_disp"]*1000, res["z_vals"], color="blue")
         ax3.invert_yaxis(); ax3.set_title("Elástica (mm)"); ax3.grid(True, ls="--", alpha=0.5)
         
         buf_graf = io.BytesIO()
