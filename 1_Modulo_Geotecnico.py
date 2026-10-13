@@ -355,7 +355,6 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
-    # Profundidade baseada estritamente no tamanho da tabela preenchida
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
     comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
 
@@ -631,6 +630,221 @@ def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_
     except Exception:
         fig.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.15)
     return fig
+
+# -----------------------------------------------------------------------------
+# GERAÇÃO DO MEGA RELATÓRIO PDF
+# -----------------------------------------------------------------------------
+def gerar_pdf_multiprojeto():
+    if len(st.session_state.projeto_furos) == 0: return None
+        
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story, styles = [], getSampleStyleSheet()
+
+    title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
+    h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
+    body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
+
+    if os.path.exists(logo_path):
+        im = ReportLabImage(logo_path, width=150, height=60)
+        im.hAlign = 'LEFT'
+        
+        crea_texto = f" - <b>CREA:</b> {registro_crea}" if registro_crea.strip() != "" else ""
+        t_cab = Table([[im, Paragraph(f"<b>OBRA:</b> {nome_obra}<br/><b>RESP. TÉCNICO:</b> {resp_tecnico}{crea_texto}<br/><b>DATA:</b> {datetime.datetime.now().strftime('%d/%m/%Y')}", ParagraphStyle('CabInfo', parent=body_style, alignment=2))]], colWidths=[160, 340])
+        
+        t_cab.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
+        story.append(t_cab)
+        story.append(Spacer(1, 20))
+        
+    story.append(Paragraph("<b>MEMORIAL DE CÁLCULO DE FUNDAÇÕES</b>", title_style))
+    story.append(Paragraph("<b>Projeto Geotécnico Consolidado - Múltiplos Furos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
+    story.append(Spacer(1, 15))
+
+    # ---- CÁLCULO INTERNO DO RESUMO PARA O PDF ----
+    dados_resumo_pdf = []
+    todos_spt_rasos_pdf = []
+    
+    for nome_furo, dados in st.session_state.projeto_furos.items():
+        calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+        df_furo = calc["df_spt"]
+        prof_max = df_furo["Profundidade (m)"].max()
+        
+        spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
+        if not pd.isna(spt_rasos): todos_spt_rasos_pdf.append(spt_rasos)
+        
+        dados_resumo_pdf.append({
+            "Furo": nome_furo,
+            "Prof. Total (m)": prof_max,
+            "Aoki Máx (kN)": f"{calc['Q_adm_aoki']:.0f}",
+            "DQ Máx (kN)": f"{calc['Q_adm_dq']:.0f}",
+            "Teixeira Máx (kN)": f"{calc['Q_adm_t']:.0f}",
+            "Adotada Final (kN)": f"{calc['Q_adm_adotada']:.0f}"
+        })
+    
+    recomendacao_pdf = ""
+    media_spt_raso = np.mean(todos_spt_rasos_pdf) if todos_spt_rasos_pdf else 0
+    
+    if media_spt_raso < 5:
+        recomendacao_pdf += "<b>Terreno superficial mole/fofo:</b> A média de N_SPT nos primeiros 3 metros é muito baixa. <b>Recomendada Fundação Profunda (Estacas)</b>.<br/><br/>"
+    elif media_spt_raso > 15:
+        recomendacao_pdf += "<b>Terreno superficial muito resistente:</b> Solo competente encontrado próximo à superfície. Viabilidade técnica para <b>Fundação Rasa (Sapatas/Radier)</b>.<br/><br/>"
+    else:
+        recomendacao_pdf += "<b>Terreno superficial intermediário:</b> Fazer verificação de viabilidade económica entre Sapatas (com melhoria de solo) e Estacas curtas.<br/><br/>"
+        
+    if tem_na and nivel_agua < 5.0:
+        recomendacao_pdf += f"<b>⚠️ Atenção ao Nível d'Água:</b> O lençol freático foi detetado raso (Profundidade {nivel_agua}m). Se optar por estacas, <b>evite estaca escavada mecanizada sem camisa metálica</b>. Sugeridas estacas tipo Hélice Contínua ou Raiz."
+    # -----------------------------------------------
+
+    story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
+    story.append(Paragraph(f"<b>Critério de Segurança Adotado:</b> {criterio_q_adm}<br/>", body_style))
+    story.append(Paragraph(recomendacao_pdf, body_style))
+    story.append(Spacer(1, 10))
+    
+    dados_tab_resumo = [["Furo", "Prof. Máx.", "Aoki F.", "Décourt F.", "Teixeira F.", "Adotada F."]]
+    for f in dados_resumo_pdf:
+        dados_tab_resumo.append([f["Furo"], f"{f['Prof. Total (m)']}m", f"{f['Aoki Máx (kN)']} kN", f"{f['DQ Máx (kN)']} kN", f"{f['Teixeira Máx (kN)']} kN", f"{f['Adotada Final (kN)']} kN"])
+        
+    t_res_geral = Table(dados_tab_resumo, colWidths=[80, 50, 85, 85, 85, 95])
+    t_res_geral.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+    story.append(t_res_geral)
+    story.append(PageBreak())
+
+    if st.session_state.croqui_img is not None:
+        story.append(Paragraph("<b>2. Croqui de Locação dos Furos</b>", h2_style))
+        story.append(Spacer(1, 10))
+        img_croqui_buffer = io.BytesIO(st.session_state.croqui_img)
+        story.append(ReportLabImage(img_croqui_buffer, width=500, height=650, kind='proportional'))
+        story.append(PageBreak())
+        num_seccao = 3
+    else:
+        num_seccao = 2
+
+    for nome_furo, dados in st.session_state.projeto_furos.items():
+        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+        
+        story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
+        story.append(Spacer(1, 10))
+        
+        story.append(Paragraph(f"<b>Resumo da Capacidade Máxima do Furo (Z = {res['comp_estaca_efetivo']}m)</b>", h2_style))
+        txt_cap = f"<b>Aoki-Velloso:</b> {res['Q_adm_aoki']:.1f} kN | <b>Décourt-Quaresma:</b> {res['Q_adm_dq']:.1f} kN | <b>Teixeira:</b> {res['Q_adm_t']:.1f} kN<br/>"
+        txt_cap += f"<b>Carga Admissível Adotada Máx ({criterio_q_adm}):</b> <font color='green'><b>{res['Q_adm_adotada']:.1f} kN</b></font>"
+        story.append(Paragraph(txt_cap, body_style))
+        story.append(Spacer(1, 5))
+        
+        story.append(Paragraph("<b>Memória de Cálculo Estrutural Base (Para a Seção Escolhida)</b>", h2_style))
+        
+        txt_geo = f"<b>Geometria Analisada:</b> Perfil Máximo Analisado = {res['comp_estaca_efetivo']:.2f} m | Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
+        txt_geo += f"<b>Concreto:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m<sup>4</sup> | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
+        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Armadura Transv.:</b> Estribos Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
+        
+        if res['P_neg'] > 0:
+            txt_geo += f"<b>Atrito Negativo (Aterro Detectado Autom. {res['h_aterro']:.1f}m):</b> Arrasto Descendente Máx (P<sub>neg</sub>) = <font color='red'><b>{res['P_neg']:.1f} kN</b></font><br/>"
+            
+        story.append(Paragraph(txt_geo, body_style))
+        story.append(Spacer(1, 10))
+
+        fig_estrutural = plot_estrutural_combinado(
+            B, secao, res['n_barras'], bitola, bitola_estribo, 
+            res['comp_estaca_efetivo'], res['L_armadura'], espacamento_estribo, 
+            res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], 
+            res['carga_V_total'], res['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
+        )
+        buf_est = io.BytesIO()
+        fig_estrutural.savefig(buf_est, format='png', dpi=150, bbox_inches='tight')
+        buf_est.seek(0)
+        plt.close(fig_estrutural)
+        
+        largura_img = 500 if incluir_pm else 350
+        t_img = Table([[ReportLabImage(buf_est, width=largura_img, height=150)]])
+        t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
+        story.append(t_img)
+        story.append(Spacer(1, 15))
+
+        story.append(Paragraph("<b>Capacidade Estrutural da Seção (Armadura):</b>", body_style))
+        z_str = "0.70 B" if secao == "Circular" else "0.80 B"
+        z_real = res['z_real']
+        eq_style = ParagraphStyle('EQ', parent=body_style, leftIndent=15, spaceBefore=2, spaceAfter=2, fontSize=8)
+        story.append(Paragraph(f"• Momento Resistente: M<sub>Rd</sub> = A<sub>s,tração</sub> x f<sub>yd</sub> x z   |   (Arm. Tracionada ≈ A<sub>s,tot</sub>/2; Braço real z ≈ {z_str})", eq_style))
+        story.append(Paragraph(f"  <i>M<sub>Rd</sub> = {res['As_tracao']:.6f} m² x ({fyk}/1.15) x 10³ kPa x {z_real:.3f} m = <b>{res['M_rd']:.1f} kN.m</b></i>", eq_style))
+        story.append(Paragraph(f"• Força Horizontal Máx: H<sub>Rd</sub> = M<sub>Rd</sub> / M<sub>max,unit</sub>", eq_style))
+        story.append(Paragraph(f"  <i>H<sub>Rd</sub> = {res['M_rd']:.1f} kN.m / {res['momento_max_unit']:.4f} m = <b>{res['H_rd']:.1f} kN</b></i>", eq_style))
+        story.append(Spacer(1, 10))
+        
+        if criterio_q_adm == "Apenas Aoki-Velloso":
+            data_tab = [["Prof(m)", "Solo", "N", "K", "α", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['K_aoki']:.0f}", f"{r['alpha_aoki']:.3f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp (kN)']:.1f}", f"{r['Rl_Aoki_Acum']:.1f}", f"{r['Rc Adm Aoki (kN)']:.1f}"])
+            t_m = Table(data_tab, colWidths=[40, 70, 25, 30, 35, 60, 60, 60, 60, 75], repeatRows=1)
+        
+        elif criterio_q_adm == "Apenas Décourt-Quaresma":
+            data_tab = [["Prof(m)", "Solo", "N", "C", "N_eq", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['C_dq']:.0f}", f"{r['N_dq']:.1f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp_dq']:.1f}", f"{r['Rl_DQ_Acum']:.1f}", f"{r['Rc Adm DQ (kN)']:.1f}"])
+            t_m = Table(data_tab, colWidths=[40, 70, 25, 30, 35, 60, 60, 60, 60, 75], repeatRows=1)
+        
+        elif criterio_q_adm == "Apenas Teixeira":
+            data_tab = [["Prof(m)", "Solo", "N", "α_T", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm (kN)"]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['alpha_teix']:.0f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp_t']:.1f}", f"{r['Rl_T_Acum']:.1f}", f"{r['Rc Adm Teix (kN)']:.1f}"])
+            t_m = Table(data_tab, colWidths=[40, 80, 30, 35, 65, 65, 65, 65, 80], repeatRows=1)
+        
+        else:
+            data_tab = [["Prof(m)", "Solo", "N", "Kh(kN/m³)", "Kv(kN/m³)", "Rc Aoki", "Rc Décourt", "Rc Teix.", "Rc Adot."]]
+            for idx, r in res["df_inf"].iterrows(): 
+                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rc Adm Aoki (kN)']:.0f}", f"{r['Rc Adm DQ (kN)']:.0f}", f"{r['Rc Adm Teix (kN)']:.0f}", f"{r['Rc Adm Adotada (kN)']:.0f}"])
+            t_m = Table(data_tab, colWidths=[40, 75, 25, 60, 60, 65, 65, 65, 75], repeatRows=1)
+            
+        t_m.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), 
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white), 
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey), 
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ('TOPPADDING', (0,0), (-1,-1), 4)
+        ]))
+        story.append(t_m)
+        story.append(PageBreak())
+        
+        story.append(Paragraph("<b>Análise Visual de Comportamento</b>", h2_style))
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
+        ax1.plot(res["df_inf"]["Rc Adm Aoki (kN)"], res["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
+        ax1.plot(res["df_inf"]["Rc Adm DQ (kN)"], res["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
+        ax1.plot(res["df_inf"]["Rc Adm Teix (kN)"], res["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange", alpha=0.3)
+        ax1.plot(res["df_inf"]["Rc Adm Adotada (kN)"], res["df_inf"]["Profundidade (m)"], label="Adotada", color="black", linewidth=2.5, linestyle=':')
+        ax1.axvline(x=res['carga_V_total'], color='red', linestyle='--')
+        ax1.invert_yaxis(); ax1.set_title("Resistência (kN)"); ax1.grid(True, ls="--", alpha=0.5); ax1.legend(fontsize=7)
+        
+        ax2.plot(res["m_flet"], res["z_vals"], color="red")
+        ax2.axvline(x=res["M_rd"], color='darkred', linestyle='--')
+        ax2.set_title("Momento Fletor")
+        ax2.invert_yaxis()
+        ax2.grid(True, ls="--", alpha=0.5)
+        
+        ax3.plot(res["y_disp"]*1000, res["z_vals"], color="blue")
+        ax3.set_title("Elástica (mm)")
+        ax3.invert_yaxis()
+        ax3.grid(True, ls="--", alpha=0.5)
+        
+        buf_graf = io.BytesIO()
+        fig.savefig(buf_graf, format='png', dpi=150, bbox_inches='tight')
+        buf_graf.seek(0)
+        plt.close(fig) 
+        
+        story.append(ReportLabImage(buf_graf, width=500, height=130))
+        story.append(Spacer(1, 15))
+        
+        if dados["img"] is not None:
+            story.append(Paragraph(f"<b>Anexo Visual: Imagem Capturada do {nome_furo}</b>", h2_style))
+            img_buffer = io.BytesIO(dados["img"])
+            story.append(ReportLabImage(img_buffer, width=400, height=550, kind='proportional'))
+            
+        story.append(PageBreak())
+        num_seccao += 1
+
+    doc.build(story)
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 # TÍTULO PRINCIPAL
 st.title("🏗️ Projeto Integrado de Fundações")
@@ -1037,218 +1251,3 @@ with col_dir:
         
         st.pyplot(fig_g)
         plt.close(fig_g)
-
-# -----------------------------------------------------------------------------
-# GERAÇÃO DO MEGA RELATÓRIO PDF
-# -----------------------------------------------------------------------------
-def gerar_pdf_multiprojeto():
-    if len(st.session_state.projeto_furos) == 0: return None
-        
-    pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    story, styles = [], getSampleStyleSheet()
-
-    title_style = ParagraphStyle('PDFTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10)
-    h2_style = ParagraphStyle('PDFH2', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceBefore=10, spaceAfter=5)
-    body_style = ParagraphStyle('PDFBody', parent=styles['Normal'], fontSize=9, leading=12)
-
-    if os.path.exists(logo_path):
-        im = ReportLabImage(logo_path, width=150, height=60)
-        im.hAlign = 'LEFT'
-        
-        crea_texto = f" - <b>CREA:</b> {registro_crea}" if registro_crea.strip() != "" else ""
-        t_cab = Table([[im, Paragraph(f"<b>OBRA:</b> {nome_obra}<br/><b>RESP. TÉCNICO:</b> {resp_tecnico}{crea_texto}<br/><b>DATA:</b> {datetime.datetime.now().strftime('%d/%m/%Y')}", ParagraphStyle('CabInfo', parent=body_style, alignment=2))]], colWidths=[160, 340])
-        
-        t_cab.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-        story.append(t_cab)
-        story.append(Spacer(1, 20))
-        
-    story.append(Paragraph("<b>MEMORIAL DE CÁLCULO DE FUNDAÇÕES</b>", title_style))
-    story.append(Paragraph("<b>Projeto Geotécnico Consolidado - Múltiplos Furos</b>", ParagraphStyle('Sub', parent=body_style, alignment=1)))
-    story.append(Spacer(1, 15))
-
-    # ---- CÁLCULO INTERNO DO RESUMO PARA O PDF ----
-    dados_resumo_pdf = []
-    todos_spt_rasos_pdf = []
-    
-    for nome_furo, dados in st.session_state.projeto_furos.items():
-        calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
-        df_furo = calc["df_spt"]
-        prof_max = df_furo["Profundidade (m)"].max()
-        
-        spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
-        if not pd.isna(spt_rasos): todos_spt_rasos_pdf.append(spt_rasos)
-        
-        dados_resumo_pdf.append({
-            "Furo": nome_furo,
-            "Prof. Total (m)": prof_max,
-            "Aoki Máx (kN)": f"{calc['Q_adm_aoki']:.0f}",
-            "DQ Máx (kN)": f"{calc['Q_adm_dq']:.0f}",
-            "Teixeira Máx (kN)": f"{calc['Q_adm_t']:.0f}",
-            "Adotada Final (kN)": f"{calc['Q_adm_adotada']:.0f}"
-        })
-    
-    recomendacao_pdf = ""
-    media_spt_raso = np.mean(todos_spt_rasos_pdf) if todos_spt_rasos_pdf else 0
-    
-    if media_spt_raso < 5:
-        recomendacao_pdf += "<b>Terreno superficial mole/fofo:</b> A média de N_SPT nos primeiros 3 metros é muito baixa. <b>Recomendada Fundação Profunda (Estacas)</b>.<br/><br/>"
-    elif media_spt_raso > 15:
-        recomendacao_pdf += "<b>Terreno superficial muito resistente:</b> Solo competente encontrado próximo à superfície. Viabilidade técnica para <b>Fundação Rasa (Sapatas/Radier)</b>.<br/><br/>"
-    else:
-        recomendacao_pdf += "<b>Terreno superficial intermediário:</b> Fazer verificação de viabilidade económica entre Sapatas (com melhoria de solo) e Estacas curtas.<br/><br/>"
-        
-    if tem_na and nivel_agua < 5.0:
-        recomendacao_pdf += f"<b>⚠️ Atenção ao Nível d'Água:</b> O lençol freático foi detetado raso (Profundidade {nivel_agua}m). Se optar por estacas, <b>evite estaca escavada mecanizada sem camisa metálica</b>. Sugeridas estacas tipo Hélice Contínua ou Raiz."
-    # -----------------------------------------------
-
-    story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
-    story.append(Paragraph(f"<b>Critério de Segurança Adotado:</b> {criterio_q_adm}<br/>", body_style))
-    story.append(Paragraph(recomendacao_pdf, body_style))
-    story.append(Spacer(1, 10))
-    
-    dados_tab_resumo = [["Furo", "Prof. Máx.", "Aoki F.", "Décourt F.", "Teixeira F.", "Adotada F."]]
-    for f in dados_resumo_pdf:
-        dados_tab_resumo.append([f["Furo"], f"{f['Prof. Total (m)']}m", f"{f['Aoki Máx (kN)']} kN", f"{f['DQ Máx (kN)']} kN", f"{f['Teixeira Máx (kN)']} kN", f"{f['Adotada Final (kN)']} kN"])
-        
-    t_res_geral = Table(dados_tab_resumo, colWidths=[80, 50, 85, 85, 85, 95])
-    t_res_geral.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-    story.append(t_res_geral)
-    story.append(PageBreak())
-
-    if st.session_state.croqui_img is not None:
-        story.append(Paragraph("<b>2. Croqui de Locação dos Furos</b>", h2_style))
-        story.append(Spacer(1, 10))
-        img_croqui_buffer = io.BytesIO(st.session_state.croqui_img)
-        story.append(ReportLabImage(img_croqui_buffer, width=500, height=650, kind='proportional'))
-        story.append(PageBreak())
-        num_seccao = 3
-    else:
-        num_seccao = 2
-
-    for nome_furo, dados in st.session_state.projeto_furos.items():
-        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
-        
-        story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
-        story.append(Spacer(1, 10))
-        
-        story.append(Paragraph(f"<b>Resumo da Capacidade Máxima do Furo (Z = {res['comp_estaca_efetivo']}m)</b>", h2_style))
-        txt_cap = f"<b>Aoki-Velloso:</b> {res['Q_adm_aoki']:.1f} kN | <b>Décourt-Quaresma:</b> {res['Q_adm_dq']:.1f} kN | <b>Teixeira:</b> {res['Q_adm_t']:.1f} kN<br/>"
-        txt_cap += f"<b>Carga Admissível Adotada Máx ({criterio_q_adm}):</b> <font color='green'><b>{res['Q_adm_adotada']:.1f} kN</b></font>"
-        story.append(Paragraph(txt_cap, body_style))
-        story.append(Spacer(1, 5))
-        
-        story.append(Paragraph("<b>Memória de Cálculo Estrutural Base (Para a Seção Escolhida)</b>", h2_style))
-        
-        txt_geo = f"<b>Geometria Analisada:</b> Perfil Máximo Analisado = {res['comp_estaca_efetivo']:.2f} m | Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
-        txt_geo += f"<b>Concreto:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m<sup>4</sup> | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
-        txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm | <b>Armadura Transv.:</b> Estribos Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
-        
-        if res['P_neg'] > 0:
-            txt_geo += f"<b>Atrito Negativo (Aterro Detectado Autom. {res['h_aterro']:.1f}m):</b> Arrasto Descendente Máx (P<sub>neg</sub>) = <font color='red'><b>{res['P_neg']:.1f} kN</b></font><br/>"
-            
-        story.append(Paragraph(txt_geo, body_style))
-        story.append(Spacer(1, 10))
-
-        fig_estrutural = plot_estrutural_combinado(
-            B, secao, res['n_barras'], bitola, bitola_estribo, 
-            res['comp_estaca_efetivo'], res['L_armadura'], espacamento_estribo, 
-            res['M_rd'], fck, fyk, res['Area_c'], res['As_total'], 
-            res['carga_V_total'], res['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
-        )
-        buf_est = io.BytesIO()
-        fig_estrutural.savefig(buf_est, format='png', dpi=150, bbox_inches='tight')
-        buf_est.seek(0)
-        plt.close(fig_estrutural)
-        
-        largura_img = 500 if incluir_pm else 350
-        t_img = Table([[ReportLabImage(buf_est, width=largura_img, height=150)]])
-        t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-        story.append(t_img)
-        story.append(Spacer(1, 15))
-
-        story.append(Paragraph("<b>Capacidade Estrutural da Seção (Armadura):</b>", body_style))
-        z_str = "0.70 B" if secao == "Circular" else "0.80 B"
-        z_real = res['z_real']
-        eq_style = ParagraphStyle('EQ', parent=body_style, leftIndent=15, spaceBefore=2, spaceAfter=2, fontSize=8)
-        story.append(Paragraph(f"• Momento Resistente: M<sub>Rd</sub> = A<sub>s,tração</sub> x f<sub>yd</sub> x z   |   (Arm. Tracionada ≈ A<sub>s,tot</sub>/2; Braço real z ≈ {z_str})", eq_style))
-        story.append(Paragraph(f"  <i>M<sub>Rd</sub> = {res['As_tracao']:.6f} m² x ({fyk}/1.15) x 10³ kPa x {z_real:.3f} m = <b>{res['M_rd']:.1f} kN.m</b></i>", eq_style))
-        story.append(Paragraph(f"• Força Horizontal Máx: H<sub>Rd</sub> = M<sub>Rd</sub> / M<sub>max,unit</sub>", eq_style))
-        story.append(Paragraph(f"  <i>H<sub>Rd</sub> = {res['M_rd']:.1f} kN.m / {res['momento_max_unit']:.4f} m = <b>{res['H_rd']:.1f} kN</b></i>", eq_style))
-        story.append(Spacer(1, 10))
-        
-        if criterio_q_adm == "Apenas Aoki-Velloso":
-            data_tab = [["Prof(m)", "Solo", "N", "K", "α", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
-            for idx, r in res["df_inf"].iterrows(): 
-                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['K_aoki']:.0f}", f"{r['alpha_aoki']:.3f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp (kN)']:.1f}", f"{r['Rl_Aoki_Acum']:.1f}", f"{r['Rc Adm Aoki (kN)']:.1f}"])
-            t_m = Table(data_tab, colWidths=[40, 70, 25, 30, 35, 60, 60, 60, 60, 75], repeatRows=1)
-        
-        elif criterio_q_adm == "Apenas Décourt-Quaresma":
-            data_tab = [["Prof(m)", "Solo", "N", "C", "N_eq", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm"]]
-            for idx, r in res["df_inf"].iterrows(): 
-                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['C_dq']:.0f}", f"{r['N_dq']:.1f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp_dq']:.1f}", f"{r['Rl_DQ_Acum']:.1f}", f"{r['Rc Adm DQ (kN)']:.1f}"])
-            t_m = Table(data_tab, colWidths=[40, 70, 25, 30, 35, 60, 60, 60, 60, 75], repeatRows=1)
-        
-        elif criterio_q_adm == "Apenas Teixeira":
-            data_tab = [["Prof(m)", "Solo", "N", "α_T", "Kh(kN/m³)", "Kv(kN/m³)", "Rp (kN)", "Σ Rl (kN)", "Rc Adm (kN)"]]
-            for idx, r in res["df_inf"].iterrows(): 
-                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['alpha_teix']:.0f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rp_t']:.1f}", f"{r['Rl_T_Acum']:.1f}", f"{r['Rc Adm Teix (kN)']:.1f}"])
-            t_m = Table(data_tab, colWidths=[40, 80, 30, 35, 65, 65, 65, 65, 80], repeatRows=1)
-        
-        else:
-            data_tab = [["Prof(m)", "Solo", "N", "Kh(kN/m³)", "Kv(kN/m³)", "Rc Aoki", "Rc Décourt", "Rc Teix.", "Rc Adot."]]
-            for idx, r in res["df_inf"].iterrows(): 
-                data_tab.append([f"{r['Profundidade (m)']:.1f}", str(r['Tipo de Solo'])[:8], f"{r['N_SPT']:.0f}", f"{r['kh (kN/m³)']:.0f}", f"{r['kv (kN/m³)']:.0f}", f"{r['Rc Adm Aoki (kN)']:.0f}", f"{r['Rc Adm DQ (kN)']:.0f}", f"{r['Rc Adm Teix (kN)']:.0f}", f"{r['Rc Adm Adotada (kN)']:.0f}"])
-            t_m = Table(data_tab, colWidths=[40, 75, 25, 60, 60, 65, 65, 65, 75], repeatRows=1)
-            
-        t_m.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')), 
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white), 
-            ('GRID', (0,0), (-1,-1), 0.5, colors.grey), 
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('FONTSIZE', (0,0), (-1,-1), 8),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
-            ('TOPPADDING', (0,0), (-1,-1), 4)
-        ]))
-        story.append(t_m)
-        story.append(PageBreak())
-        
-        story.append(Paragraph("<b>Análise Visual de Comportamento</b>", h2_style))
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 3))
-        ax1.plot(res["df_inf"]["Rc Adm Aoki (kN)"], res["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
-        ax1.plot(res["df_inf"]["Rc Adm DQ (kN)"], res["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
-        ax1.plot(res["df_inf"]["Rc Adm Teix (kN)"], res["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange", alpha=0.3)
-        ax1.plot(res["df_inf"]["Rc Adm Adotada (kN)"], res["df_inf"]["Profundidade (m)"], label="Adotada", color="black", linewidth=2.5, linestyle=':')
-        ax1.axvline(x=res['carga_V_total'], color='red', linestyle='--')
-        ax1.invert_yaxis(); ax1.set_title("Resistência (kN)"); ax1.grid(True, ls="--", alpha=0.5); ax1.legend(fontsize=7)
-        
-        ax2.plot(res["m_flet"], res["z_vals"], color="red")
-        ax2.axvline(x=res["M_rd"], color='darkred', linestyle='--')
-        ax2.set_title("Momento Fletor")
-        ax2.invert_yaxis()
-        ax2.grid(True, ls="--", alpha=0.5)
-        
-        ax3.plot(res["y_disp"]*1000, res["z_vals"], color="blue")
-        ax3.set_title("Elástica (mm)")
-        ax3.invert_yaxis()
-        ax3.grid(True, ls="--", alpha=0.5)
-        
-        buf_graf = io.BytesIO()
-        fig.savefig(buf_graf, format='png', dpi=150, bbox_inches='tight')
-        buf_graf.seek(0)
-        plt.close(fig) 
-        
-        story.append(ReportLabImage(buf_graf, width=500, height=130))
-        story.append(Spacer(1, 15))
-        
-        if dados["img"] is not None:
-            story.append(Paragraph(f"<b>Anexo Visual: Imagem Capturada do {nome_furo}</b>", h2_style))
-            img_buffer = io.BytesIO(dados["img"])
-            story.append(ReportLabImage(img_buffer, width=400, height=550, kind='proportional'))
-            
-        story.append(PageBreak())
-        num_seccao += 1
-
-    doc.build(story)
-    pdf_buffer.seek(0)
-    return pdf_buffer.getvalue()
