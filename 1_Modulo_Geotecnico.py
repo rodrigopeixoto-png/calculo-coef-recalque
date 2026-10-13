@@ -147,11 +147,6 @@ tem_na = st.sidebar.checkbox("Considerar Nível d'Água (N.A.)?", value=False)
 nivel_agua = st.sidebar.number_input("Profundidade do N.A. (m)", min_value=0.0, value=3.0, step=0.5) if tem_na else 999.0
 
 st.sidebar.markdown("---")
-st.sidebar.header("🚜 Atrito Negativo (Aterro / Adensamento)")
-tem_atrito_neg = st.sidebar.checkbox("Considerar Atrito Negativo?", value=False, help="Anula a resistência de fuste na camada de aterro e soma o atrito descendente à carga.")
-h_aterro = st.sidebar.number_input("Espessura do Aterro / Solo Mole (m)", min_value=0.5, max_value=20.0, value=3.0, step=0.5) if tem_atrito_neg else 0.0
-
-st.sidebar.markdown("---")
 st.sidebar.header("⚖️ Cargas e Material")
 fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
@@ -193,9 +188,7 @@ st.session_state['params_globais'] = {
     "bitola_estribo": bitola_estribo,
     "espacamento_estribo": espacamento_estribo,
     "L_armadura_manual": L_armadura_manual,
-    "criterio_q_adm": criterio_q_adm,
-    "tem_atrito_neg": tem_atrito_neg,
-    "h_aterro": h_aterro
+    "criterio_q_adm": criterio_q_adm
 }
 
 st.sidebar.markdown("---")
@@ -345,7 +338,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
         fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
     return fig
 
-def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos", tem_atrito_neg=False, h_aterro=0.0):
+def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -405,26 +398,19 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
         df_inf["alpha_teix"] = df_inf["Tipo de Solo"].apply(get_teix_alpha)
         df_inf["delta_Rl_t"] = beta_t * df_inf["N_corr"] * Perimetro * 1.0
 
-        # --- SEPARAÇÃO DO ATRITO NEGATIVO ---
-        P_neg_aoki = 0.0
-        P_neg_dq = 0.0
-        P_neg_t = 0.0
-
-        if tem_atrito_neg and h_aterro > 0:
-            mascara_aterro = df_inf["Profundidade (m)"] <= (cota_assentamento + h_aterro)
-            
-            P_neg_aoki = df_inf.loc[mascara_aterro, "delta_Rl (kN)"].sum()
-            P_neg_dq = df_inf.loc[mascara_aterro, "delta_Rl_dq"].sum()
-            P_neg_t = df_inf.loc[mascara_aterro, "delta_Rl_t"].sum()
-            
-            # Zera a resistência lateral no aterro
-            df_inf.loc[mascara_aterro, "delta_Rl (kN)"] = 0.0
-            df_inf.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
-            df_inf.loc[mascara_aterro, "delta_Rl_t"] = 0.0
+        # --- SEPARAÇÃO DO ATRITO NEGATIVO (LEITURA AUTOMÁTICA DA TABELA) ---
+        mascara_aterro = df_inf["Tipo de Solo"] == "Aterro"
+        
+        P_neg_aoki = df_inf.loc[mascara_aterro, "delta_Rl (kN)"].sum()
+        P_neg_dq = df_inf.loc[mascara_aterro, "delta_Rl_dq"].sum()
+        P_neg_t = df_inf.loc[mascara_aterro, "delta_Rl_t"].sum()
+        
+        # Zera a resistência lateral no aterro
+        df_inf.loc[mascara_aterro, "delta_Rl (kN)"] = 0.0
+        df_inf.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
+        df_inf.loc[mascara_aterro, "delta_Rl_t"] = 0.0
 
         P_neg_adotado = (P_neg_aoki + P_neg_dq + P_neg_t) / 3.0 if criterio == "Média dos Métodos" else max(P_neg_aoki, P_neg_dq, P_neg_t)
-        if not tem_atrito_neg:
-            P_neg_adotado = 0.0
 
         # Somas Acumuladas
         df_inf["Rl_Aoki_Acum"] = df_inf["delta_Rl (kN)"].cumsum()
@@ -650,7 +636,7 @@ with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=Fal
 
     #### 2. Configuração da Fundação e Critérios
     * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâm. da seção circular.
-    * **Atrito Negativo (Aterro):** Se houver camadas moles ou aterros adensáveis, defina a espessura na aba de atrito negativo. A resistência desse trecho será anulada e o arrasto será somado à carga do pilar.
+    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar.
     * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$).
 
     #### 3. Sincronização e Relatório
@@ -882,7 +868,7 @@ with col_dir:
             todos_spt_rasos = []
             
             for nome_furo, dados in st.session_state.projeto_furos.items():
-                calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm, tem_atrito_neg, h_aterro)
+                calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
                 df_furo = calc["df_spt"]
                 prof_max = df_furo["Profundidade (m)"].max()
                 
@@ -933,7 +919,7 @@ with col_dir:
             furos_disponiveis[f"{k} (Salvo no Projeto)"] = v["df"]
             
         furo_selecionado_visualizacao = st.selectbox("🔍 Escolha qual furo visualizar nos gráficos:", list(furos_disponiveis.keys()))
-        res_atual = processar_calculos_estaca(furos_disponiveis[furo_selecionado_visualizacao], L_armadura_manual, criterio_q_adm, tem_atrito_neg, h_aterro)
+        res_atual = processar_calculos_estaca(furos_disponiveis[furo_selecionado_visualizacao], L_armadura_manual, criterio_q_adm)
         
         st.markdown(f"### 📊 Capacidade de Carga Geotécnica")
         c1, c2, c3, c4 = st.columns(4)
@@ -1046,7 +1032,7 @@ def gerar_pdf_multiprojeto():
         num_seccao = 2
 
     for nome_furo, dados in st.session_state.projeto_furos.items():
-        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm, tem_atrito_neg, h_aterro)
+        res = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
         
         story.append(Paragraph(f"<b>{num_seccao}. ANÁLISE INDIVIDUAL: FURO {nome_furo}</b>", title_style))
         story.append(Spacer(1, 10))
@@ -1065,8 +1051,8 @@ def gerar_pdf_multiprojeto():
         txt_geo += f"<b>Armadura Long.:</b> {res['n_barras']} Φ {bitola:.1f} mm (Comp. Gaiola: {res['L_armadura']:.2f} m) | <b>Armadura Transv.:</b> {res['qtd_estribos']} Estribos Φ {bitola_estribo:.1f} mm c/ {espacamento_estribo:.0f} cm<br/>"
         txt_geo += f"<b>Quantitativos da Estaca:</b> Volume de Concreto = {res['V_concreto']:.2f} m³ | Peso Total de Aço = {res['peso_aco_total']:.1f} kg<br/>"
         
-        if tem_atrito_neg:
-            txt_geo += f"<b>Atrito Negativo (Aterro {h_aterro}m):</b> Arrasto Descendente (P<sub>neg</sub>) = <font color='red'><b>{res['P_neg']:.1f} kN</b></font> | Carga Total Efetiva na Estaca = <b>{res['carga_V_total']:.1f} kN</b><br/>"
+        if res['P_neg'] > 0:
+            txt_geo += f"<b>Atrito Negativo (Aterro Reconhecido Autom.):</b> Arrasto Descendente (P<sub>neg</sub>) = <font color='red'><b>{res['P_neg']:.1f} kN</b></font> | Carga Total Efetiva na Estaca = <b>{res['carga_V_total']:.1f} kN</b><br/>"
             
         story.append(Paragraph(txt_geo, body_style))
         story.append(Spacer(1, 10))
