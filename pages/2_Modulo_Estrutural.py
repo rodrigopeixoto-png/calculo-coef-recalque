@@ -582,7 +582,7 @@ with st.expander("📖 Guia de Utilização - Módulo Estrutural & BIM 5D", expa
 
     #### 3. Análise Visual e Memória
     * **Resumo Executivo:** Veja o volume total de concreto escavado, metragem de perfuração e peso total de aço ($CA50/CA60$).
-    * **Planta de Locação Topográfica:** Analise o mapa de calor interativo mostrando a profundidade de cada estaca e a distribuição de cargas no terreno.
+    * **Planta de Locação Topográfica:** Analise o mapa de estacas interativo mostrando a profundidade de cada estaca e a distribuição de cargas no terreno.
 
     #### 4. Exportação BIM 5D e Documentação
     * **Modelo 3D (.IFC4):** Gere o ficheiro IFC perfeitamente padronizado com os metadados da AltoQi Eberick (`AltoQi_Eberick-Itens_associados`, `Pset_PileCommon`, etc.) e unidades nativas em **kg**, **m³**, **m**, **kN** e **cm** para integração direta no **Visus / PriMus**.
@@ -761,7 +761,7 @@ if st.session_state.df_projeto is not None:
                 color_continuous_scale=px.colors.diverging.RdYlBu_r 
             )
             fig.update_traces(textposition='top center', marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-            fig.update_layout(height=700, plot_bgcolor='rgba(240, 240, 240, 0.8)', title_text="Mapa de Calor", xaxis=dict(scaleanchor="y", scaleratio=1))
+            fig.update_layout(height=700, plot_bgcolor='rgba(240, 240, 240, 0.8)', title_text="Mapa de estacas", xaxis=dict(scaleanchor="y", scaleratio=1))
             st.plotly_chart(fig, use_container_width=True)
         except Exception: pass
 
