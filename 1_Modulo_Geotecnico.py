@@ -345,6 +345,7 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     
+    # Corte inteligente das linhas não preenchidas no final da tabela
     df_spt = df_spt.dropna(subset=['N_SPT']).copy()
     if df_spt.empty:
         df_spt = pd.DataFrame({"Profundidade (m)": [1], "N_SPT": [1], "Tipo de Solo": ["Argila"]})
@@ -852,3 +853,409 @@ def gerar_pdf_multiprojeto():
     doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
+
+# TÍTULO PRINCIPAL
+st.title("🏗️ Projeto Integrado de Fundações")
+st.caption("Múltiplos Furos, Múltiplos Métodos (Aoki, Décourt, Teixeira), Detalhamento de Armaduras e Diagrama P-M")
+
+with st.expander("📖 Guia de Utilização - Módulo Geotécnico", expanded=False):
+    st.markdown("""
+    ### 🎯 Objetivo do Módulo
+    Realizar a caracterização geotécnica do terreno, processar ensaios de **Sondagem a Percussão (SPT)** e determinar a capacidade de carga e profundidade de assentamento de fundações profundas através dos métodos consagrados da engenharia.
+
+    ---
+
+    ### 📋 Passo a Passo de Operação
+
+    #### 1. Identificação do Projeto e Sondagem
+    * **Identificação:** Na barra lateral, preencha o *Nome da Obra*, *Responsável Técnico* e *CREA*.
+    * **Perfil Geotécnico:** Introduza as camadas de solo do ensaio SPT. Defina a profundidade, o valor de $N_{SPT}$ e o tipo de solo predominante (Areia, Silte, Argila e suas variações).
+
+    #### 2. Configuração da Fundação e Critérios
+    * **Geometria:** Selecione o tipo de fundação (Estaca), o método construtivo (Escavada, Helice, Raiz, etc.) e o diâm. da seção circular.
+    * **Atrito Negativo (Aterro):** É lido automaticamente! Basta selecionar "Aterro" na coluna "Tipo de Solo" da tabela. A resistência desse trecho será anulada e o arrasto descendente será somado à carga do pilar no Módulo Estrutural.
+    * **Critério de Resistência:** Escolha o critério para a Capacidade de Carga Admissível ($Q_{adm}$).
+
+    #### 3. Sincronização e Relatório
+    * **Integração Automática:** Ao finalizar a inserção dos dados do terreno, o projeto é guardado automaticamente na memória do sistema (`st.session_state`).
+    * **Ficheiro do Projeto (.utea):** Faça o download do ficheiro `.utea` para guardar o histórico no seu computador.
+    * **Relatório Geotécnico (PDF):** Gere o documento PDF completo contendo os perfis de sondagem e gráficos de capacidade de carga.
+    """)
+
+# -----------------------------------------------------------------------------
+# COLUNA ESQUERDA: IMPORTAÇÃO E EDIÇÃO
+# -----------------------------------------------------------------------------
+col_esq, col_dir = st.columns([1.2, 2])
+
+with col_esq:
+    st.subheader("📥 1. Dados do Furo de Sondagem")
+    
+    def on_furo_change():
+        sel = st.session_state.sel_furo_edicao
+        if sel != "-- Novo Furo --":
+            st.session_state.furo_atual_nome = sel
+            st.session_state.furo_atual_df = st.session_state.projeto_furos[sel]["df"].copy()
+            st.session_state.furo_atual_img = st.session_state.projeto_furos[sel]["img"]
+        else:
+            num_novo = len(st.session_state.projeto_furos) + 1
+            st.session_state.furo_atual_nome = f"SP-{num_novo:02d}"
+            st.session_state.furo_atual_df = pd.DataFrame({
+                "Profundidade (m)": list(range(1, 16)),
+                "N_SPT": [None] * 15,
+                "Tipo de Solo": ["Argila"] * 15
+            })
+            st.session_state.furo_atual_img = None
+
+    opcoes_furos = ["-- Novo Furo --"] + list(st.session_state.projeto_furos.keys())
+    st.selectbox(
+        "📂 Carregar furo para edição:", 
+        opcoes_furos, 
+        key="sel_furo_edicao",
+        on_change=on_furo_change
+    )
+    
+    nome_furo_input = st.text_input("📌 Nome do Furo (Atual):", value=st.session_state.furo_atual_nome)
+    
+    st.info("Para contornar os limites gratuitos da IA, experimente o nosso Leitor Offline ou copie e cole os dados diretamente do Excel na tabela!")
+    
+    st.markdown("[👉 **Clique aqui para gerar sua API Key gratuita no Google AI Studio**](https://aistudio.google.com/app/apikey)")
+    api_key = st.text_input("🔑 API Key do Gemini (Opcional se usar Offline ou Manual):", type="password")
+    
+    arquivo_pdf = st.file_uploader("📥 Importar Laudo de Sondagem (PDF)", type=["pdf"])
+    
+    doc = None
+    if arquivo_pdf is not None:
+        try:
+            arquivo_pdf.seek(0)
+            bytes_pdf = arquivo_pdf.read()
+            doc = fitz.open(stream=bytes_pdf, filetype="pdf")
+            total_paginas = len(doc)
+            
+            st.markdown("---")
+            st.write("**Extração de Dados do PDF:**")
+            
+            pagina_selecionada = st.number_input(f"Página do Perfil (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="pag_perfil_input")
+                
+            page_idx = pagina_selecionada - 1
+            
+            with st.expander("👁️ Pré-visualizar Página Selecionada", expanded=True):
+                st.markdown(f"**Página atual:** {pagina_selecionada}")
+                pix_preview = doc.load_page(page_idx).get_pixmap(dpi=72)
+                st.image(pix_preview.tobytes("png"), caption=f"Página do Perfil: {pagina_selecionada}", use_container_width=True)
+            
+            c_btn1, c_btn2, c_btn3, c_btn4 = st.columns(4)
+            with c_btn1:
+                btn_ia = st.button("🤖 Ler IA (Limitado)", use_container_width=True, help="Usa o Google Gemini (20 leituras/dia)")
+            with c_btn2:
+                btn_offline = st.button("⚡ Extração Relâmpago (Nativa)", use_container_width=True, help="Lê o texto nativo do PDF sem internet usando pdfplumber")
+            with c_btn3:
+                btn_manual = st.button("📸 Imagem (Manual)", use_container_width=True, help="Captura apenas o recorte da imagem")
+            with c_btn4:
+                btn_limpar = st.button("🧹 Zerar Tabela", use_container_width=True, help="Limpa a tabela para editar um furo novo")
+                
+            if btn_limpar:
+                st.session_state.furo_atual_df = pd.DataFrame({
+                    "Profundidade (m)": list(range(1, 16)),
+                    "N_SPT": [None] * 15,
+                    "Tipo de Solo": ["Argila"] * 15
+                })
+                st.rerun()
+                
+            if btn_offline:
+                with st.spinner("Analisando o PDF localmente sem internet..."):
+                    try:
+                        arquivo_pdf.seek(0)
+                        with pdfplumber.open(arquivo_pdf) as pdf:
+                            page_plumber = pdf.pages[page_idx]
+                            texto_pdf = page_plumber.extract_text()
+                            
+                            if not texto_pdf or len(texto_pdf.strip()) < 10:
+                                st.error("⚠️ O PDF parece ser uma imagem escaneada. O leitor offline precisa de um PDF digital (com texto selecionável). Use o botão 'Imagem (Manual)' e cole do Excel.")
+                            else:
+                                linhas = texto_pdf.split('\n')
+                                prof_esperada = 1
+                                dados_offline = []
+                                
+                                for linha in linhas:
+                                    match = re.search(rf"^\s*0*{prof_esperada}(?:[,.]0+)?\s+([\d\s/]+)", linha)
+                                    if not match:
+                                        match = re.search(rf"\s+0*{prof_esperada}(?:[,.]0+)?\s+([\d\s/]+)", linha)
+                                        
+                                    if match:
+                                        numeros_str = match.group(1)
+                                        nums = re.findall(r'\b\d+\b', numeros_str)
+                                        if nums:
+                                            n_spt = int(nums[-1]) 
+                                            if n_spt > 60: n_spt = 60 
+                                            dados_offline.append([prof_esperada, n_spt, "Argila"])
+                                            prof_esperada += 1
+                                            
+                                if len(dados_offline) > 0:
+                                    df_off = pd.DataFrame(dados_offline, columns=["Profundidade (m)", "N_SPT", "Tipo de Solo"])
+                                    while len(df_off) < 15:
+                                        df_off.loc[len(df_off)] = [len(df_off)+1, None, "Argila"]
+                                        
+                                    st.session_state.furo_atual_df = df_off
+                                    pix = doc.load_page(page_idx).get_pixmap(dpi=300)
+                                    st.session_state.furo_atual_img = pix.tobytes("png")
+                                    st.session_state.furo_atual_nome = nome_furo_input
+                                    st.success(f"Extração relâmpago concluída! Foram lidos {len(dados_offline)} metros.")
+                                    st.rerun()
+                                else:
+                                    st.warning("O formato visual desta tabela é complexo para o leitor offline básico. Use o modo 'Imagem (Manual)' e cole os números diretamente do seu Excel!")
+                    except Exception as e:
+                        st.error(f"Erro na extração offline: {e}")
+            
+            if btn_ia:
+                if not api_key: st.warning("Insira a chave de API primeiro.")
+                else:
+                    with st.spinner("Lendo tabela na nuvem..."):
+                        try:
+                            genai.configure(api_key=api_key)
+                            modelo = genai.GenerativeModel('gemini-3.6-flash')
+                            pix = doc.load_page(page_idx).get_pixmap(dpi=300)
+                            img = PILImage.open(io.BytesIO(pix.tobytes("png")))
+                            
+                            prompt = f"""Extraia a tabela SPT.
+                            Retorne apenas CSV separado por ponto e vírgula (;). Cabeçalho: Profundidade;N_SPT;Tipo de Solo
+                            REGRAS: 1. Profundidade: apenas número. 2. N_SPT: golpes finais (se fração, só o numerador). 3. Tipo: {", ".join(OPCOES_SOLO)}"""
+                            
+                            resposta = modelo.generate_content([prompt, img])
+                            
+                            texto_limpo = resposta.text
+                            texto_limpo = texto_limpo.replace("```csv", "")
+                            texto_limpo = texto_limpo.replace("```", "")
+                            texto_limpo = texto_limpo.strip()
+                            
+                            df_ia = pd.read_csv(io.StringIO(texto_limpo), sep=";")
+                            df_ia.columns = ["Profundidade (m)", "N_SPT", "Tipo de Solo"]
+                            
+                            df_ia['Profundidade (m)'] = pd.to_numeric(df_ia['Profundidade (m)'].astype(str).str.replace(',', '.').str.extract(r'(\d+)')[0], errors='coerce')
+                            df_ia['N_SPT'] = pd.to_numeric(df_ia['N_SPT'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
+                            df_ia = df_ia.dropna(subset=['Profundidade (m)', 'N_SPT']).astype({'Profundidade (m)': 'int', 'N_SPT': 'int'})
+                            
+                            if len(df_ia) > 0:
+                                st.session_state.furo_atual_df = df_ia
+                                st.session_state.furo_atual_img = pix.tobytes("png")
+                                st.session_state.furo_atual_nome = nome_furo_input
+                                st.success("Tabela extraída via IA com sucesso!")
+                                st.rerun()
+                            else:
+                                st.error("A IA não reconheceu a tabela na imagem.")
+                        except Exception as e:
+                            st.error(f"Erro IA: {e}")
+            
+            if btn_manual:
+                try:
+                    pix = doc.load_page(page_idx).get_pixmap(dpi=300)
+                    st.session_state.furo_atual_img = pix.tobytes("png")
+                    st.session_state.furo_atual_nome = nome_furo_input
+                    st.success("Imagem anexada ao furo atual! Preencha a tabela abaixo à mão ou cole do Excel (Ctrl+V).")
+                except Exception as e:
+                    st.error(f"Erro ao capturar a imagem: {e}")
+                            
+        except Exception as e: 
+            st.error(f"Erro PDF: {e}")
+            doc = None
+
+    st.markdown("---")
+    st.write(f"**Tabela de Preenchimento: {nome_furo_input}** (Aceita Colar do Excel)")
+    df_editado = st.data_editor(
+        st.session_state.furo_atual_df,
+        column_config={"Tipo de Solo": st.column_config.SelectboxColumn("Tipo de Solo", options=OPCOES_SOLO)},
+        num_rows="dynamic", width="stretch"
+    )
+    
+    if st.button(f"💾 Guardar {nome_furo_input} no Projeto", type="primary", width="stretch"):
+        st.session_state.projeto_furos[nome_furo_input] = {
+            "df": df_editado.copy(),
+            "img": st.session_state.furo_atual_img
+        }
+        st.session_state.furo_atual_nome = nome_furo_input
+        st.session_state['projeto_geotecnico'] = json.loads(exportar_projeto_json())
+        st.success(f"Furo {nome_furo_input} guardado e sincronizado!")
+    
+    st.markdown("---")
+    st.subheader("🗺️ 2. Adicionar Croqui de Locação")
+    st.info("Pode extrair a página do PDF carregado ou fazer o upload de uma imagem solta.")
+    
+    modo_croqui = st.radio("Origem do Croqui:", ["Extrair do PDF", "Fazer Upload de Imagem (.png/.jpg)"], horizontal=True)
+    
+    if modo_croqui == "Extrair do PDF":
+        if arquivo_pdf is not None and doc is not None:
+            col_pag_c, col_btn_c = st.columns([1, 1])
+            with col_pag_c:
+                pag_croqui = st.number_input(f"Página do Croqui (1 a {total_paginas}):", min_value=1, max_value=total_paginas, value=1, key="num_croqui")
+            
+            with st.expander("👁️ Pré-visualizar Croqui", expanded=True):
+                st.markdown(f"**Página atual:** {pag_croqui}")
+                pix_croqui = doc.load_page(pag_croqui - 1).get_pixmap(dpi=72)
+                st.image(pix_croqui.tobytes("png"), caption=f"Página do Croqui: {pag_croqui}", use_container_width=True)
+            
+            if st.button("💾 Guardar Página como Croqui", width="stretch"):
+                pix_high = doc.load_page(pag_croqui - 1).get_pixmap(dpi=300)
+                st.session_state.croqui_img = pix_high.tobytes("png")
+                st.success("Croqui guardado com sucesso a partir do PDF!")
+        else:
+            st.warning("Importe um PDF acima primeiro para poder extrair a página.")
+            
+    else:
+        img_upload = st.file_uploader("Selecione o ficheiro do Croqui", type=["png", "jpg", "jpeg"])
+        if img_upload is not None:
+            st.image(img_upload, use_container_width=True)
+            if st.button("💾 Guardar Upload como Croqui", width="stretch"):
+                st.session_state.croqui_img = img_upload.getvalue()
+                st.success("Croqui guardado com sucesso a partir do upload!")
+
+    st.markdown("---")
+    if len(st.session_state.projeto_furos) > 0:
+        if st.button("🗑️ Limpar Todos os Furos Salvos", width="stretch"):
+            st.session_state.projeto_furos = {}
+            st.session_state['projeto_geotecnico'] = None
+            st.rerun()
+
+# -----------------------------------------------------------------------------
+# COLUNA DIREITA: RESULTADOS
+# -----------------------------------------------------------------------------
+with col_dir:
+    tab_resumo, tab_atual = st.tabs(["📊 Visão Geral do Terreno", "🔍 Análise Detalhada dos Furos"])
+
+    with tab_resumo:
+        st.subheader("Resumo dos Furos Salvos no Projeto")
+        if len(st.session_state.projeto_furos) == 0:
+            st.warning("Nenhum furo salvo ainda. Preencha a tabela ao lado e clique em Guardar.")
+            dados_resumo = []
+            recomendacao = ""
+        else:
+            dados_resumo = []
+            todos_spt_rasos = []
+            
+            for nome_furo, dados in st.session_state.projeto_furos.items():
+                calc = processar_calculos_estaca(dados["df"], L_armadura_manual, criterio_q_adm)
+                df_furo = calc["df_spt"]
+                prof_max = df_furo["Profundidade (m)"].max()
+                
+                spt_rasos = df_furo[df_furo["Profundidade (m)"] <= 3]["N_SPT"].mean()
+                if not pd.isna(spt_rasos): todos_spt_rasos.append(spt_rasos)
+                
+                status_geo = "✅ OK" if calc["carga_V_total"] <= calc["Q_adm_adotada"] else "❌ FALHA"
+                
+                dados_resumo.append({
+                    "Furo": nome_furo,
+                    "Prof. Total (m)": prof_max,
+                    "Aoki Máx (kN)": f"{calc['Q_adm_aoki']:.0f}",
+                    "DQ Máx (kN)": f"{calc['Q_adm_dq']:.0f}",
+                    "Teixeira Máx (kN)": f"{calc['Q_adm_t']:.0f}",
+                    "Adotada Final (kN)": f"{calc['Q_adm_adotada']:.0f}"
+                })
+            
+            st.table(pd.DataFrame(dados_resumo))
+            
+            st.markdown("### 🤖 Diagnóstico e Recomendação de Fundação")
+            recomendacao = ""
+            media_spt_raso = np.mean(todos_spt_rasos) if todos_spt_rasos else 0
+            
+            if media_spt_raso < 5:
+                recomendacao += "**Terreno superficial mole/fofo:** A média de N_SPT nos primeiros 3 metros é muito baixa. **Recomendada Fundação Profunda (Estacas)**.\n\n"
+            elif media_spt_raso > 15:
+                recomendacao += "**Terreno superficial muito resistente:** Solo competente encontrado próximo à superfície. Viabilidade técnica para **Fundação Rasa (Sapatas/Radier)**.\n\n"
+            else:
+                recomendacao += "**Terreno superficial intermediário:** Fazer verificação de viabilidade económica entre Sapatas (com melhoria de solo) e Estacas curtas.\n\n"
+                
+            if tem_na and nivel_agua < 5.0:
+                recomendacao += f"**⚠️ Atenção ao Nível d'Água:** O lençol freático foi detetado raso (Profundidade {nivel_agua}m). Se optar por estacas, **evite estaca escavada mecanizada sem camisa metálica**. Sugeridas estacas tipo Hélice Contínua ou Raiz."
+            
+            st.info(recomendacao)
+            
+            if st.session_state.croqui_img is not None:
+                st.markdown("---")
+                st.markdown("### 🗺️ Croqui de Locação dos Furos")
+                st.image(st.session_state.croqui_img, use_container_width=True)
+                if st.button("🗑️ Remover Croqui"):
+                    st.session_state.croqui_img = None
+                    st.rerun()
+
+        if len(st.session_state.projeto_furos) > 0:
+            st.markdown("---")
+            st.subheader("📄 Geração do Relatório PDF Geotécnico")
+            pdf_final_bytes = gerar_pdf_multiprojeto()
+            if pdf_final_bytes:
+                nome_arquivo_pdf = re.sub(r'[^A-Za-z0-9_-]', '', nome_obra)[:20]
+                st.download_button(
+                    label="📥 Baixar Memorial Completo (PDF)",
+                    data=pdf_final_bytes,
+                    file_name=f"Memorial_Consolidado_{nome_arquivo_pdf}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+            
+    with tab_atual:
+        furos_disponiveis = {f"{nome_furo_input} (Em Edição na Tabela)": st.session_state.projeto_furos.get(nome_furo_input, {})}
+        for k, v in st.session_state.projeto_furos.items():
+            furos_disponiveis[f"{k} (Salvo no Projeto)"] = v
+            
+        furo_selecionado_visualizacao = st.selectbox("🔍 Escolha qual furo visualizar nos gráficos:", list(furos_disponiveis.keys()))
+        
+        dados_furo_view = furos_disponiveis[furo_selecionado_visualizacao]
+        if "df" in dados_furo_view:
+            df_view = dados_furo_view["df"]
+        else:
+            df_view = df_editado
+            
+        res_atual = processar_calculos_estaca(df_view, L_armadura_manual, criterio_q_adm)
+        
+        st.markdown(f"### 📊 Capacidade de Carga Geotécnica (Na Cota Máxima: {res_atual['comp_estaca_efetivo']}m)")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(f"⚖️ ADOTADA", f"{res_atual['Q_adm_adotada']:,.1f} kN", delta=f"{criterio_q_adm}", delta_color="off")
+        c2.metric("Aoki-Velloso", f"{res_atual['Q_adm_aoki']:,.1f} kN")
+        c3.metric("Décourt-Quaresma", f"{res_atual['Q_adm_dq']:,.1f} kN")
+        c4.metric("Teixeira", f"{res_atual['Q_adm_t']:,.1f} kN")
+        
+        st.markdown("### 📋 Tabela de Capacidade Discretizada (Metro a Metro)")
+        df_mostrar = res_atual["df_inf"][["Profundidade (m)", "N_SPT", "Tipo de Solo", "Rc Adm Aoki (kN)", "Rc Adm DQ (kN)", "Rc Adm Teix (kN)", "Rc Adm Adotada (kN)"]].copy()
+        df_mostrar = df_mostrar.rename(columns={"Rc Adm Aoki (kN)": "Aoki (kN)", "Rc Adm DQ (kN)": "Décourt (kN)", "Rc Adm Teix (kN)": "Teixeira (kN)", "Rc Adm Adotada (kN)": "Adotada (kN)"})
+        for c in ["Aoki (kN)", "Décourt (kN)", "Teixeira (kN)", "Adotada (kN)"]: df_mostrar[c] = df_mostrar[c].round(1)
+        st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+        
+        st.markdown("### 🏗️ Desempenho Estrutural e Interação Solo-Estrutura")
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("M_Rd (Momento Resist.)", f"{res_atual['M_rd']:.1f} kN.m")
+        e2.metric("H_Rd (Horiz. Máx)", f"{res_atual['H_rd']:.1f} kN")
+        e3.metric("Coef. de Mola (K_h)", f"{res_atual['kh_global']:,.0f} kN/m³")
+        e4.metric("Desloc. Topo (Est. Inteira)", f"{res_atual['deslocamento_max_mm']:.2f} mm")
+        
+        fig_estrutural = plot_estrutural_combinado(
+            B, secao, res_atual['n_barras'], bitola, bitola_estribo, 
+            res_atual['comp_estaca_efetivo'], res_atual['L_armadura'], espacamento_estribo, 
+            res_atual['M_rd'], fck, fyk, res_atual['Area_c'], res_atual['As_total'], 
+            res_atual['carga_V_total'], res_atual['momento_max_atuante'], incluir_diagrama_pm=incluir_pm
+        )
+        st.pyplot(fig_estrutural)
+        
+        st.markdown("### 📈 Perfis Geotécnicos ao Longo do Furo")
+        fig_g, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 4))
+        
+        ax1.plot(res_atual["df_inf"]["Rc Adm Aoki (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Aoki", color="green", alpha=0.3)
+        ax1.plot(res_atual["df_inf"]["Rc Adm DQ (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Décourt", color="blue", alpha=0.3)
+        ax1.plot(res_atual["df_inf"]["Rc Adm Teix (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Teixeira", color="orange", alpha=0.3)
+        ax1.plot(res_atual["df_inf"]["Rc Adm Adotada (kN)"], res_atual["df_inf"]["Profundidade (m)"], label="Adotada", color="black", linewidth=2.5, linestyle=':')
+        ax1.axvline(x=res_atual['carga_V_total'], color='red', linestyle='--')
+        ax1.set_title("Resistência (kN)")
+        ax1.invert_yaxis()
+        ax1.grid(True, ls="--", alpha=0.5)
+        ax1.legend(fontsize=8)
+        
+        ax2.plot(res_atual["m_flet"], res_atual["z_vals"], color="red")
+        ax2.axvline(x=res_atual["M_rd"], color='darkred', linestyle='--')
+        ax2.set_title("Momento Fletor")
+        ax2.invert_yaxis()
+        ax2.grid(True, ls="--", alpha=0.5)
+        
+        ax3.plot(res_atual["y_disp"]*1000, res_atual["z_vals"], color="blue")
+        ax3.set_title("Elástica (mm)")
+        ax3.invert_yaxis()
+        ax3.grid(True, ls="--", alpha=0.5)
+        
+        st.pyplot(fig_g)
+        plt.close(fig_g)
