@@ -345,7 +345,6 @@ def plot_diagrama_pm(M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
 def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média dos Métodos"):
     df_spt = df_original.copy()
     
-    # Corte inteligente das linhas não preenchidas no final da tabela
     df_spt = df_spt.dropna(subset=['N_SPT']).copy()
     if df_spt.empty:
         df_spt = pd.DataFrame({"Profundidade (m)": [1], "N_SPT": [1], "Tipo de Solo": ["Argila"]})
@@ -353,6 +352,13 @@ def processar_calculos_estaca(df_original, l_arm_manual=None, criterio="Média d
     df_spt["Profundidade (m)"] = range(1, len(df_spt) + 1)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
+    
+    # -------------------------------------------------------------
+    # NOVO: Aproximação conservadora para Aterros fracos ou zerados
+    # -------------------------------------------------------------
+    mascara_aterro_fraco = (df_spt["Tipo de Solo"] == "Aterro") & (df_spt["N_SPT"] < 2)
+    df_spt.loc[mascara_aterro_fraco, "N_SPT"] = 2
+    
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
     prof_maxima_furo = float(df_spt["Profundidade (m)"].max())
@@ -696,7 +702,6 @@ def gerar_pdf_multiprojeto():
 
     story.append(Paragraph("<b>1. Resumo do Terreno e Diagnóstico</b>", h2_style))
     
-    # NOVAS LINHAS - Exibe o tipo de estaca no resumo
     txt_intro = f"<b>Tipo de Fundação Escolhida:</b> {tipo_fundacao}"
     if tipo_fundacao == "Profunda (Estaca)":
         txt_intro += f" - <b>Estaca {metodo_construtivo}</b>"
@@ -739,7 +744,6 @@ def gerar_pdf_multiprojeto():
         
         story.append(Paragraph("<b>Memória de Cálculo Estrutural Base (Para a Seção Escolhida)</b>", h2_style))
         
-        # NOVAS LINHAS - Exibe o tipo de estaca em cada pilar
         txt_geo = f"<b>Elemento Adotado:</b> Estaca {metodo_construtivo} | <b>Seção:</b> {secao} (B = {B:.2f}m)<br/>"
         txt_geo += f"<b>Geometria Analisada:</b> Perfil Máximo Analisado = {res['comp_estaca_efetivo']:.2f} m | Área da Seção (A_c) = {res['Area_c']:.4f} m² | Perímetro (U) = {res['Perimetro']:.3f} m<br/>"
         txt_geo += f"<b>Concreto:</b> Inércia (I_c) = {res['Inercia_c']:.6f} m<sup>4</sup> | Módulo Elasticidade (E_c) = {(res['E_c']/1000):.0f} MPa<br/>"
