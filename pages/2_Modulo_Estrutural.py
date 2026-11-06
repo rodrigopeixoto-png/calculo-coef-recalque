@@ -137,24 +137,27 @@ def processar_dxf(file_bytes):
 # -----------------------------------------------------------------------------
 # MOTOR GEOTÉCNICO SIMPLIFICADO PARA CALCULAR A CURVA DO FURO BASE
 # -----------------------------------------------------------------------------
-def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_adm):
+def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_adm, cota_assentamento):
     df = df_spt.copy()
     
     df = df.dropna(subset=['N_SPT']).copy()
     if df.empty:
-        return None
+        return None, 0.0
         
     df["N_SPT"] = pd.to_numeric(df["N_SPT"], errors="coerce").fillna(1)
     df["Tipo de Solo"] = df["Tipo de Solo"].fillna("Argila")
     
+    # Trava de segurança para Aterros fracos ou zerados
     mascara_aterro_fraco = (df["Tipo de Solo"] == "Aterro") & (df["N_SPT"] < 2)
     df.loc[mascara_aterro_fraco, "N_SPT"] = 2
     
     df["N_corr"] = df["N_SPT"].apply(lambda x: min(x, 50))
     
-    prof_maxima_furo = float(df["Profundidade (m)"].max())
-    comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
-
+    # Filtra o solo para ignorar a parte que será escavada
+    df = df[df["Profundidade (m)"] > cota_assentamento].copy()
+    if df.empty:
+        return None, 0.0
+    
     Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
     Perimetro = np.pi * B if secao == "Circular" else 4 * B
     f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
@@ -196,6 +199,7 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
     df["delta_Rl_t"] = beta_t * df["N_corr"] * Perimetro * 1.0
     df["Rp_t"] = df["alpha_teix"] * df["N_corr"] * Area_c
 
+    # Atrito Negativo
     mascara_aterro = df["Tipo de Solo"] == "Aterro"
     P_neg_adotado = 0.0
     
@@ -267,6 +271,7 @@ st.sidebar.header("3. ⚙️ Parâmetros da Fundação")
 metodo_construtivo = st.sidebar.selectbox("Método Construtivo:", list(FATORES_CONSTRUTIVOS.keys()), index=4)
 secao = st.sidebar.selectbox("Secção", ["Circular", "Quadrada"])
 B = st.sidebar.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.30, step=0.05)
+cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value=0.0, value=0.0, step=0.5)
 criterio_q_adm = st.sidebar.selectbox("Critério de Carga:", ["Média dos Métodos", "Menor Valor (Mais Conservador)", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"])
 
 # -----------------------------------------------------------------------------
@@ -285,10 +290,10 @@ if upload_dxf is not None and furo_base_selecionado is not None:
             st.success(f"Tabela de cargas processada com sucesso! {len(df_cargas)} pilares encontrados.")
             
             df_furo_base = projeto_furos[furo_base_selecionado]
-            df_curva, P_neg = calcular_curva_capacidade(df_furo_base, B, metodo_construtivo, secao, criterio_q_adm)
+            df_curva, P_neg = calcular_curva_capacidade(df_furo_base, B, metodo_construtivo, secao, criterio_q_adm, cota_assentamento)
             
             if df_curva is None or df_curva.empty:
-                st.error("O furo selecionado não tem dados válidos.")
+                st.error("O furo selecionado não tem dados válidos abaixo da Cota de Arrasamento especificada.")
             else:
                 prof_maxima = df_curva["Profundidade (m)"].max()
                 cap_maxima = df_curva["Rc_Adotada"].iloc[-1]
@@ -323,7 +328,6 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                 df_resultados = pd.DataFrame(resultados_finais)
                 st.dataframe(df_resultados, use_container_width=True, hide_index=True)
                 
-                # BOTÃO CSV À PROVA DE BALAS (Para evitar o erro do xlsxwriter)
                 csv_bytes = df_resultados.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
                 
                 st.download_button(
