@@ -43,8 +43,9 @@ st.set_page_config(page_title="Módulo Estrutural - DXF", page_icon="🏗️", l
 # -----------------------------------------------------------------------------
 def processar_dxf(file_bytes):
     try:
-        # Carregar o DXF em memória
-        doc = ezdxf.read(io.BytesIO(file_bytes))
+        # CONVERSÃO DE BYTES PARA TEXTO (Corrige o erro do ezdxf)
+        texto_dxf = file_bytes.decode('utf-8', errors='ignore')
+        doc = ezdxf.read(io.StringIO(texto_dxf))
         msp = doc.modelspace()
 
         # Extrair todos os textos (TEXT e MTEXT) e as suas coordenadas X, Y
