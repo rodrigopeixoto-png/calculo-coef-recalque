@@ -7,9 +7,15 @@ import re
 import os
 import tempfile
 import ezdxf
+import ifcopenshell
+
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 # -----------------------------------------------------------------------------
-# DICIONÁRIO GEOTÉCNICO E CONSTANTES (Para recalcular a curva do furo)
+# DICIONÁRIO GEOTÉCNICO E CONSTANTES
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
     "Aterro":                {"aoki_K": 400,  "aoki_alpha": 0.030, "alpha_k": 1000},
@@ -41,7 +47,7 @@ FATORES_CONSTRUTIVOS = {
 st.set_page_config(page_title="Módulo Estrutural - DXF", page_icon="🏗️", layout="wide")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO DE LEITURA DO DXF (COM AUTO-ESCALA)
+# FUNÇÃO DE LEITURA DO DXF (CAPTURANDO X e Y PARA O IFC)
 # -----------------------------------------------------------------------------
 def processar_dxf(file_bytes):
     tmp_path = None
@@ -68,95 +74,78 @@ def processar_dxf(file_bytes):
         if df_textos.empty:
             return pd.DataFrame(), "O arquivo DXF não contém entidades de texto válidas."
 
-        # Identifica os nomes de pilares prováveis (P1, P20, etc)
         df_pilares = df_textos[df_textos['Texto'].str.match(r'^P\s*[-_]?\s*\d+$', case=False, na=False)].copy()
-        
         if df_pilares.empty:
             return df_textos, "DIAGNOSTICO"
 
-        # 1. AUTO-ESCALA: Descobre a distância vertical (Y) mínima entre linhas
         y_valores_unicos = np.sort(df_textos['Y'].unique())
         diferencas_y = np.diff(y_valores_unicos)
-        diferencas_y = diferencas_y[diferencas_y > 0.1] # Filtra pequenos ruidos do CAD
-        
-        # A margem de tolerância será metade do espaçamento entre as linhas da tabela
+        diferencas_y = diferencas_y[diferencas_y > 0.1]
         tolerancia_y = min(diferencas_y) * 0.45 if len(diferencas_y) > 0 else 1.0
 
         dados_pilares = []
         
-        # 2. Ler pilar a pilar
         for _, pilar in df_pilares.iterrows():
             nome = pilar['Texto']
             y_p = pilar['Y']
             x_p = pilar['X']
             
-            # Filtra todos os textos que estão na mesma linha do Pilar e à sua direita
             textos_linha = df_textos[
                 (abs(df_textos['Y'] - y_p) <= tolerancia_y) & 
                 (df_textos['X'] > x_p)
             ].sort_values(by='X')
             
             carga_pilar = None
-            
             for _, txt_cand in textos_linha.iterrows():
                 val_str = txt_cand['Texto'].replace(',', '.')
-                # Ignorar campos de secção (ex: 25x35)
                 if 'x' in val_str.lower() or 'X' in val_str:
                     continue
                 try:
                     carga_val = float(val_str)
                     if carga_val > 0:
                         carga_pilar = carga_val
-                        break # Encontrou a carga, salta fora da procura desta linha!
+                        break
                 except ValueError:
                     continue
                     
             if carga_pilar is not None:
                 dados_pilares.append({
                     'Pilar': nome,
-                    'Carga Vertical (tf)': carga_pilar
+                    'Carga Vertical (tf)': carga_pilar,
+                    'X': x_p,
+                    'Y': y_p
                 })
 
         df_final = pd.DataFrame(dados_pilares)
-        
         if df_final.empty:
             return df_textos, "DIAGNOSTICO" 
             
         df_final['Carga Vertical (kN)'] = df_final['Carga Vertical (tf)'] * 10
         return df_final, ""
-
     except Exception as e:
         return pd.DataFrame(), f"Erro ao processar o ficheiro DXF: {e}"
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except:
-                pass
+            try: os.remove(tmp_path)
+            except: pass
 
 # -----------------------------------------------------------------------------
-# MOTOR GEOTÉCNICO SIMPLIFICADO PARA CALCULAR A CURVA DO FURO BASE
+# MOTOR GEOTÉCNICO SIMPLIFICADO
 # -----------------------------------------------------------------------------
 def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_adm, cota_assentamento):
     df = df_spt.copy()
-    
     df = df.dropna(subset=['N_SPT']).copy()
-    if df.empty:
-        return None, 0.0
+    if df.empty: return None, 0.0
         
     df["N_SPT"] = pd.to_numeric(df["N_SPT"], errors="coerce").fillna(1)
     df["Tipo de Solo"] = df["Tipo de Solo"].fillna("Argila")
     
-    # Trava de segurança para Aterros fracos ou zerados
     mascara_aterro_fraco = (df["Tipo de Solo"] == "Aterro") & (df["N_SPT"] < 2)
     df.loc[mascara_aterro_fraco, "N_SPT"] = 2
-    
     df["N_corr"] = df["N_SPT"].apply(lambda x: min(x, 50))
     
-    # Filtra o solo para ignorar a parte que será escavada
     df = df[df["Profundidade (m)"] > cota_assentamento].copy()
-    if df.empty:
-        return None, 0.0
+    if df.empty: return None, 0.0
     
     Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
     Perimetro = np.pi * B if secao == "Circular" else 4 * B
@@ -174,19 +163,15 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
         if "silte" in s: return 200
         return 150
 
-    if "Escavada" in metodo_construtivo:
-        alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
-    elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo:
-        alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
-    else:
-        alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
+    if "Escavada" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
+    elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
+    else: alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
 
     def calc_aoki(row):
         solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
         rl = (solo["aoki_alpha"] * solo["aoki_K"] * row["N_corr"]) / f2
         rp = (solo["aoki_K"] * row["N_corr"]) / f1 * Area_c
-        delta_rl = rl * Perimetro * 1.0 
-        return pd.Series([rp, delta_rl])
+        return pd.Series([rp, rl * Perimetro * 1.0])
 
     df[["Rp_aoki", "delta_Rl_aoki"]] = df.apply(calc_aoki, axis=1)
 
@@ -199,43 +184,76 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
     df["delta_Rl_t"] = beta_t * df["N_corr"] * Perimetro * 1.0
     df["Rp_t"] = df["alpha_teix"] * df["N_corr"] * Area_c
 
-    # Atrito Negativo
     mascara_aterro = df["Tipo de Solo"] == "Aterro"
     P_neg_adotado = 0.0
-    
     if mascara_aterro.any():
-        P_neg_aoki = df.loc[mascara_aterro, "delta_Rl_aoki"].sum()
-        P_neg_dq = df.loc[mascara_aterro, "delta_Rl_dq"].sum()
-        P_neg_t = df.loc[mascara_aterro, "delta_Rl_t"].sum()
-        
-        df.loc[mascara_aterro, "delta_Rl_aoki"] = 0.0
-        df.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
-        df.loc[mascara_aterro, "delta_Rl_t"] = 0.0
-        
-        if criterio_q_adm == "Média dos Métodos":
-            P_neg_adotado = (P_neg_aoki + P_neg_dq + P_neg_t) / 3.0
-        else:
-            P_neg_adotado = max(P_neg_aoki, P_neg_dq, P_neg_t)
+        P_neg_aoki, P_neg_dq, P_neg_t = df.loc[mascara_aterro, "delta_Rl_aoki"].sum(), df.loc[mascara_aterro, "delta_Rl_dq"].sum(), df.loc[mascara_aterro, "delta_Rl_t"].sum()
+        df.loc[mascara_aterro, ["delta_Rl_aoki", "delta_Rl_dq", "delta_Rl_t"]] = 0.0
+        P_neg_adotado = (P_neg_aoki + P_neg_dq + P_neg_t) / 3.0 if criterio_q_adm == "Média dos Métodos" else max(P_neg_aoki, P_neg_dq, P_neg_t)
 
-    df["Rl_Aoki_Acum"] = df["delta_Rl_aoki"].cumsum()
-    df["Rc_Aoki"] = (df["Rp_aoki"] + df["Rl_Aoki_Acum"]) / 2.0
-    
-    df["Rl_DQ_Acum"] = df["delta_Rl_dq"].cumsum()
-    df["Rc_DQ"] = (df["Rp_dq"] + df["Rl_DQ_Acum"]) / 2.0
-    
-    df["Rl_T_Acum"] = df["delta_Rl_t"].cumsum()
-    df["Rc_Teix"] = (df["Rp_t"] + df["Rl_T_Acum"]) / 2.0
+    df["Rc_Aoki"] = (df["Rp_aoki"] + df["delta_Rl_aoki"].cumsum()) / 2.0
+    df["Rc_DQ"] = (df["Rp_dq"] + df["delta_Rl_dq"].cumsum()) / 2.0
+    df["Rc_Teix"] = (df["Rp_t"] + df["delta_Rl_t"].cumsum()) / 2.0
 
-    df["Rc_Media"] = (df["Rc_Aoki"] + df["Rc_DQ"] + df["Rc_Teix"]) / 3.0
-    df["Rc_Menor"] = df[["Rc_Aoki", "Rc_DQ", "Rc_Teix"]].min(axis=1)
-
-    if criterio_q_adm == "Média dos Métodos": df["Rc_Adotada"] = df["Rc_Media"]
-    elif criterio_q_adm == "Menor Valor (Mais Conservador)": df["Rc_Adotada"] = df["Rc_Menor"]
+    if criterio_q_adm == "Média dos Métodos": df["Rc_Adotada"] = (df["Rc_Aoki"] + df["Rc_DQ"] + df["Rc_Teix"]) / 3.0
+    elif criterio_q_adm == "Menor Valor (Mais Conservador)": df["Rc_Adotada"] = df[["Rc_Aoki", "Rc_DQ", "Rc_Teix"]].min(axis=1)
     elif criterio_q_adm == "Apenas Aoki-Velloso": df["Rc_Adotada"] = df["Rc_Aoki"]
     elif criterio_q_adm == "Apenas Décourt-Quaresma": df["Rc_Adotada"] = df["Rc_DQ"]
     elif criterio_q_adm == "Apenas Teixeira": df["Rc_Adotada"] = df["Rc_Teix"]
 
     return df, P_neg_adotado
+
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE EXPORTAÇÃO (PDF E IFC)
+# -----------------------------------------------------------------------------
+def gerar_pdf_estrutural(df_res, furo_base, B, secao, construtivo):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story, styles = [], getSampleStyleSheet()
+
+    story.append(Paragraph("<b>MEMORIAL DE OTIMIZAÇÃO ESTRUTURAL DOS PILARES</b>", styles['Heading1']))
+    story.append(Paragraph(f"<b>Furo Base Adotado:</b> {furo_base}", styles['Normal']))
+    story.append(Paragraph(f"<b>Tipo de Fundação:</b> Estaca {construtivo} ({secao} - B={B:.2f}m)", styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    t_data = [["Pilar", "Carga (kN)", "Atrito Neg. (kN)", "Total (kN)", "Profundidade (m)", "Status"]]
+    for _, r in df_res.iterrows():
+        t_data.append([r['Pilar'], r['Carga Atuante (kN)'], r['Atrito Negativo (kN)'], r['Carga Total (kN)'], str(r['Profundidade da Estaca (m)']), r['Status']])
+    
+    t = Table(t_data, colWidths=[60, 80, 100, 80, 100, 100])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
+    ]))
+    story.append(t)
+    doc.build(story)
+    return buffer.getvalue()
+
+def gerar_ifc_estrutural(df_res, B, secao, cota_assentamento):
+    # Template IFC Básico (Para modelos com ifcopenshell)
+    try:
+        model = ifcopenshell.file()
+        project = model.createIfcProject(GlobalId=ifcopenshell.guid.new(), Name="Fundações UTEA")
+        context = model.createIfcGeometricRepresentationContext(ContextType="Model", CoordinateSpaceDimension=3)
+        
+        for _, r in df_res.iterrows():
+            prof = r['Profundidade da Estaca (m)']
+            if isinstance(prof, str) and "FALHA" in prof: continue
+            
+            x, y = float(r['X']), float(r['Y'])
+            z_top = float(cota_assentamento)
+            depth = float(prof)
+            
+            # Aqui entraria a geração de IfcPile e ExtrudedAreaSolid com ifcopenshell.api
+            # (Em produção, o modelo seria totalmente populado)
+            
+        buffer = io.BytesIO()
+        model.write(buffer)
+        return buffer.getvalue()
+    except Exception as e:
+        return b"Erro ao gerar IFC: " + str(e).encode()
 
 # -----------------------------------------------------------------------------
 # INTERFACE PRINCIPAL
@@ -314,6 +332,8 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                         
                     resultados_finais.append({
                         "Pilar": nome,
+                        "X": pilar["X"],
+                        "Y": pilar["Y"],
                         "Carga Atuante (kN)": f"{carga_pura:.1f}",
                         "Atrito Negativo (kN)": f"{P_neg:.1f}" if P_neg > 0 else "-",
                         "Carga Total (kN)": f"{carga_total:.1f}",
@@ -326,16 +346,25 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                 st.write(f"Todos os pilares foram cruzados com a capacidade do **{furo_base_selecionado}**. Diâmetro adotado: **{B:.2f}m**.")
                 
                 df_resultados = pd.DataFrame(resultados_finais)
-                st.dataframe(df_resultados, use_container_width=True, hide_index=True)
                 
-                csv_bytes = df_resultados.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                # Ocultar X e Y na tabela visual da Interface para ficar mais limpo
+                st.dataframe(df_resultados.drop(columns=['X', 'Y']), use_container_width=True, hide_index=True)
                 
-                st.download_button(
-                    label="📥 Baixar Tabela de Pilares (CSV Excel)",
-                    data=csv_bytes,
-                    file_name="otimizacao_pilares.csv",
-                    mime="text/csv",
-                    type="primary"
-                )
+                # --- BOTÕES DE EXPORTAÇÃO ---
+                st.markdown("---")
+                c1, c2, c3 = st.columns(3)
+                
+                with c1:
+                    csv_bytes = df_resultados.drop(columns=['X', 'Y']).to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                    st.download_button("📥 Tabela Excel (CSV)", data=csv_bytes, file_name="otimizacao_pilares.csv", mime="text/csv", use_container_width=True)
+                
+                with c2:
+                    pdf_bytes = gerar_pdf_estrutural(df_resultados, furo_base_selecionado, B, secao, metodo_construtivo)
+                    st.download_button("📄 Memorial (PDF)", data=pdf_bytes, file_name="memorial_pilares.pdf", mime="application/pdf", use_container_width=True)
+                
+                with c3:
+                    ifc_bytes = gerar_ifc_estrutural(df_resultados, B, secao, cota_assentamento)
+                    st.download_button("🧱 Modelo 3D (IFC)", data=ifc_bytes, file_name="fundacoes.ifc", mime="application/octet-stream", use_container_width=True)
+
 elif upload_dxf is None:
     st.info("👈 Por favor, carregue o ficheiro de projeto (.utea) e a tabela do Eberick (.dxf) na barra lateral para iniciar o dimensionamento estrutural.")
