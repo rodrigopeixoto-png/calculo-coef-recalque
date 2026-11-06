@@ -29,7 +29,7 @@ except ImportError:
 st.set_page_config(page_title="Módulo Estrutural e BIM - UTEA", page_icon="🏢", layout="wide")
 
 # -----------------------------------------------------------------------------
-# DICIONÁRIO GEOTÉCNICO E CONSTANTES
+# DICIONÁRIO GEOTÉCNICO
 # -----------------------------------------------------------------------------
 PARAMETROS_SOLO = {
     "Aterro":                {"aoki_K": 400,  "aoki_alpha": 0.030},
@@ -61,18 +61,15 @@ FATORES_CONSTRUTIVOS = {
 def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
 def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo, tem_atrito_neg=False, h_aterro=0.0, metodo_construtivo="Raiz/Hélice", secao="Circular"):
+def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_bloco_kn, criterio, prof_minima, ne, verificar_bulbo, tem_atrito_neg=False, h_aterro=0.0, metodo_construtivo="Raiz/Hélice", secao="Circular"):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
-    
-    mascara_aterro_fraco = (df_spt["Tipo de Solo"] == "Aterro") & (df_spt["N_SPT"] < 2)
-    df_spt.loc[mascara_aterro_fraco, "N_SPT"] = 2
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
     Area_c = (np.pi * diametro_m**2) / 4 if secao == "Circular" else diametro_m**2
-    Perimetro = np.pi * diametro_m if secao == "Circular" else 4 * diametro_m
+    Perimetro = np.pi * diametro_m if secao == "Circular" else 4 * diametro_m 
     f1 = FATORES_CONSTRUTIVOS.get(metodo_construtivo, FATORES_CONSTRUTIVOS["Raiz/Hélice"])["F1"]
     f2 = FATORES_CONSTRUTIVOS.get(metodo_construtivo, FATORES_CONSTRUTIVOS["Raiz/Hélice"])["F2"]
     
@@ -97,6 +94,7 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
     df_spt["delta_Rl_t"] = (beta_t * df_spt["N_corr"] * Perimetro)
     df_spt["Rp_t"] = (df_spt["alpha_teix"] * df_spt["N_corr"] * Area_c)
 
+    # --- SEPARAÇÃO DO ATRITO NEGATIVO ---
     p_neg_estaca = 0.0
     if tem_atrito_neg and h_aterro > 0:
         mascara_aterro = df_spt["Profundidade (m)"] <= h_aterro
@@ -106,6 +104,7 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
         p_neg_t = df_spt.loc[mascara_aterro, "delta_Rl_t"].sum()
         p_neg_estaca = (p_neg_aoki + p_neg_dq + p_neg_t) / 3.0 if criterio == "Média dos Métodos" else max(p_neg_aoki, p_neg_dq, p_neg_t)
 
+        # Zera a resistência lateral no aterro
         df_spt.loc[mascara_aterro, "delta_Rl_aoki"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_t"] = 0.0
@@ -119,17 +118,30 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
 
     col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor (Mais Conservador)" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
 
+    carga_alvo_kn = carga_bloco_kn / ne
     carga_alvo_efetiva = carga_alvo_kn + p_neg_estaca
     limite_prof_min = max(prof_minima, (h_aterro + 1.0) if tem_atrito_neg else prof_minima)
 
-    df_suficiente = df_spt[(df_spt[col_adotada] >= carga_alvo_efetiva) & (df_spt["Profundidade (m)"] >= limite_prof_min)]
-    
-    # Adicionada Lógica de Status (Cruza Resistência com Carga)
     cap_maxima = df_spt[col_adotada].iloc[-1]
     status = "✅ OK"
+    
+    # NOVO: Se falhar, calcula a recomendação do número de estacas e profundidade ideal
     if carga_alvo_efetiva > cap_maxima:
-        status = f"❌ Excede Cap. Máx ({cap_maxima:.0f} kN)"
-        
+        cap_util = cap_maxima - p_neg_estaca
+        if cap_util > 0:
+            ne_rec = int(np.ceil(carga_bloco_kn / cap_util))
+            carga_estaca_rec = (carga_bloco_kn / ne_rec) + p_neg_estaca
+            df_suf_rec = df_spt[(df_spt[col_adotada] >= carga_estaca_rec) & (df_spt["Profundidade (m)"] >= limite_prof_min)]
+            if len(df_suf_rec) > 0:
+                prof_rec = df_suf_rec.iloc[0]["Profundidade (m)"]
+                status = f"❌ Excede (Máx: {cap_maxima:.0f}kN) ➔ Recomendado: {ne_rec} un a {prof_rec:.1f}m"
+            else:
+                status = f"❌ Excede Cap. Máx ({cap_maxima:.0f} kN)"
+        else:
+            status = f"❌ Excede Cap. Máx ({cap_maxima:.0f} kN) - Solo Inviável"
+
+    df_suficiente = df_spt[(df_spt[col_adotada] >= carga_alvo_efetiva) & (df_spt["Profundidade (m)"] >= limite_prof_min)]
+    
     prof_calc = None
     if len(df_suficiente) > 0:
         if verificar_bulbo:
@@ -223,6 +235,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
     pilares = df_raw[df_raw['Texto'].str.match(r'^P[-_A-Za-z]*\s*\d+$', case=False)].copy()
     if len(pilares) == 0: return None, df_raw
 
+    # Auto-Escala Y e Separação da Tabela para a Planta Física
     x_counts = pilares['X'].round(1).value_counts()
     x_coluna_tabela = x_counts.idxmax() if not x_counts.empty else 0
     pilares_tabela = pilares[abs(pilares['X'] - x_coluna_tabela) < 2.0].copy()
@@ -269,15 +282,22 @@ def extrair_tabela_do_dxf(dxf_bytes):
                 y_val = str(coords.iloc[0]['Y'] * 100)
                 
         linhas_dados.append({
-            "Pilar": str(p['Texto']).strip(), "X_cm": x_val, "Y_cm": y_val,
-            "Carga_Max_tf": carga_tf, "ne": pega_valor_header('ne'), "Estaca": pega_valor_header('estaca')
+            "Pilar": str(p['Texto']).strip(), 
+            "X_cm": x_val, 
+            "Y_cm": y_val,
+            "Carga_Max_tf": carga_tf, 
+            "ne": pega_valor_header('ne'), 
+            "Estaca": pega_valor_header('estaca')
         })
         
     df_final = pd.DataFrame(linhas_dados)
+    
     for col in ["X_cm", "Y_cm", "Carga_Max_tf", "ne"]:
-        if col in df_final.columns: df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace(',', '.').str.extract(r'([-+]?\d*\.?\d+)')[0], errors='coerce')
+        if col in df_final.columns: 
+            df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace(',', '.').str.extract(r'([-+]?\d*\.?\d+)')[0], errors='coerce')
             
     df_final = df_final.dropna(subset=['Pilar'])
+    
     if len(df_final) > 0: return df_final, df_raw
     return None, df_raw
 
@@ -286,6 +306,7 @@ def extrair_tabela_do_dxf(dxf_bytes):
 # -----------------------------------------------------------------------------
 def gerar_modelo_ifc(df_projeto):
     model = ifcopenshell.file(schema="IFC4")
+    
     project = run("root.create_entity", model, ifc_class="IfcProject", name="Projeto BIM - UTEA Fundações")
     
     try:
@@ -297,13 +318,15 @@ def gerar_modelo_ifc(df_projeto):
         
         unit_assig = model.create_entity("IfcUnitAssignment", Units=[u_len, u_area, u_vol, u_mass, u_force])
         project.UnitsInContext = unit_assig
-    except Exception: pass
+    except Exception:
+        pass
     
     context = run("context.add_context", model, context_type="Model")
     body = run("context.add_context", model, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context)
     
     site = run("root.create_entity", model, ifc_class="IfcSite", name="Terreno")
     run("aggregate.assign_object", model, relating_object=project, products=[site])
+    
     building = run("root.create_entity", model, ifc_class="IfcBuilding", name="Fundações Profundas")
     run("aggregate.assign_object", model, relating_object=site, products=[building])
     
@@ -359,26 +382,40 @@ def gerar_modelo_ifc(df_projeto):
             
             try:
                 u_cm = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Prefix="CENTI", Name="METRE")
+
                 def injetar_propriedades(nome_pset, dic_props):
                     pset = run("pset.add_pset", model, product=pile, name=nome_pset)
                     lista_props = []
                     for k, v in dic_props.items():
-                        t, val = v["type"], v["value"]
-                        if t == "IfcLabel": ifc_val = model.createIfcLabel(str(val))
-                        elif t == "IfcBoolean": ifc_val = model.createIfcBoolean(bool(val))
-                        elif t == "IfcMassMeasure": ifc_val = model.createIfcMassMeasure(float(val))
-                        elif t == "IfcVolumeMeasure": ifc_val = model.createIfcVolumeMeasure(float(val))
-                        elif t == "IfcLengthMeasure": ifc_val = model.createIfcLengthMeasure(float(val))
+                        t = v["type"]
+                        val = v["value"]
+                        
+                        if t == "IfcLabel": 
+                            ifc_val = model.createIfcLabel(str(val))
+                        elif t == "IfcBoolean": 
+                            ifc_val = model.createIfcBoolean(bool(val))
+                        elif t == "IfcMassMeasure": 
+                            ifc_val = model.createIfcMassMeasure(float(val))
+                        elif t == "IfcVolumeMeasure": 
+                            ifc_val = model.createIfcVolumeMeasure(float(val))
+                        elif t == "IfcLengthMeasure": 
+                            ifc_val = model.createIfcLengthMeasure(float(val))
                         elif t == "IfcLengthMeasure_CM":
                             ifc_val = model.createIfcLengthMeasure(float(val))
                             prop = model.createIfcPropertySingleValue(k, None, ifc_val, u_cm)
                             lista_props.append(prop)
                             continue
-                        elif t == "IfcForceMeasure": ifc_val = model.createIfcForceMeasure(float(val))
-                        elif t == "IfcReal": ifc_val = model.createIfcReal(float(val))
-                        elif t == "IfcInteger": ifc_val = model.createIfcInteger(int(val))
-                        else: ifc_val = model.createIfcLabel(str(val))
+                        elif t == "IfcForceMeasure": 
+                            ifc_val = model.createIfcForceMeasure(float(val))
+                        elif t == "IfcReal": 
+                            ifc_val = model.createIfcReal(float(val))
+                        elif t == "IfcInteger": 
+                            ifc_val = model.createIfcInteger(int(val))
+                        else: 
+                            ifc_val = model.createIfcLabel(str(val))
+                        
                         lista_props.append(model.createIfcPropertySingleValue(k, None, ifc_val, None))
+                    
                     pset.HasProperties = lista_props
 
                 injetar_propriedades("AltoQi_Eberick-Itens_associados", {
@@ -417,13 +454,16 @@ def gerar_modelo_ifc(df_projeto):
                     "Carga_Total_Projeto_kN": {"type": "IfcForceMeasure", "value": float(row.get('Carga_Total_Estaca_kN', row.get('Carga_por_Estaca_kN', 0)))},
                     "LoadBearing": {"type": "IfcBoolean", "value": True}
                 })
-            except Exception: pass 
+                
+            except Exception:
+                pass 
+                
     return model.to_string()
 
 # -----------------------------------------------------------------------------
-# MOTOR DE GERAÇÃO DO MEMORIAL (PDF)
+# MOTOR DE GERAÇÃO DO MEMORIAL (PDF) PILAR A PILAR
 # -----------------------------------------------------------------------------
-def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_atrito_neg, h_aterro, metodo_construtivo, secao):
+def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_atrito_neg, h_aterro, metodo_construtivo="Raiz/Hélice", secao="Circular"):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
@@ -432,8 +472,9 @@ def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_a
     
     Area_c = (np.pi * diametro_m**2) / 4 if secao == "Circular" else diametro_m**2
     Perimetro = np.pi * diametro_m if secao == "Circular" else 4 * diametro_m 
-    f1, f2 = FATORES_CONSTRUTIVOS.get(metodo_construtivo, FATORES_CONSTRUTIVOS["Raiz/Hélice"])["F1"], FATORES_CONSTRUTIVOS.get(metodo_construtivo, FATORES_CONSTRUTIVOS["Raiz/Hélice"])["F2"]
-
+    f1 = FATORES_CONSTRUTIVOS.get(metodo_construtivo, FATORES_CONSTRUTIVOS["Raiz/Hélice"])["F1"]
+    f2 = FATORES_CONSTRUTIVOS.get(metodo_construtivo, FATORES_CONSTRUTIVOS["Raiz/Hélice"])["F2"]
+    
     if "Escavada" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
     elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
     else: alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
@@ -458,10 +499,12 @@ def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_a
     p_neg_estaca = 0.0
     if tem_atrito_neg and h_aterro > 0:
         mascara_aterro = df_spt["Profundidade (m)"] <= h_aterro
+        
         p_neg_aoki = df_spt.loc[mascara_aterro, "delta_Rl_aoki"].sum()
         p_neg_dq = df_spt.loc[mascara_aterro, "delta_Rl_dq"].sum()
         p_neg_t = df_spt.loc[mascara_aterro, "delta_Rl_t"].sum()
         p_neg_estaca = (p_neg_aoki + p_neg_dq + p_neg_t) / 3.0 if criterio == "Média dos Métodos" else max(p_neg_aoki, p_neg_dq, p_neg_t)
+
         df_spt.loc[mascara_aterro, "delta_Rl_aoki"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_t"] = 0.0
@@ -469,6 +512,7 @@ def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_a
     df_spt["Rc Aoki"] = (df_spt["Rp_aoki"] + df_spt["delta_Rl_aoki"].cumsum()) / 2.0
     df_spt["Rc DQ"] = (df_spt["Rp_dq"] + df_spt["delta_Rl_dq"].cumsum()) / 2.0
     df_spt["Rc Teix"] = (df_spt["Rp_t"] + df_spt["delta_Rl_t"].cumsum()) / 2.0
+
     df_spt["Rc Média"] = (df_spt["Rc Aoki"] + df_spt["Rc DQ"] + df_spt["Rc Teix"]) / 3.0
     df_spt["Rc Menor"] = df_spt[["Rc Aoki", "Rc DQ", "Rc Teix"]].min(axis=1)
 
@@ -522,6 +566,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
 
     for idx, row in df_projeto.iterrows():
         pilar_elements = [] 
+        
         nome_pilar = str(row['Pilar'])
         ne = int(row['ne'])
         diam = row['Diametro_m']
@@ -529,6 +574,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
         carga_est = row['Carga_por_Estaca_kN']
         carga_total_resistir = row.get('Carga_Total_Estaca_kN', carga_est)
         prof = row['Profundidade_m']
+        status = row.get('Status', '')
         
         if df_spt_atual is not None:
             cota_info, p_neg = obter_capacidades_na_cota(df_spt_atual, diam, prof, criterio, tem_atrito_neg, h_aterro, construtivo, secao)
@@ -559,7 +605,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
             dados_pilar += f"""<b>2. Verificação Geotécnica na Cota de Assentamento (Z = {prof:.1f}m)</b><br/>
             Tipo de Solo na Ponta: {solo_tipo} (N_SPT = {nspt:.0f})<br/>
             Rc Aoki-Velloso: {rc_aoki:.1f} kN | Rc Décourt-Quaresma: {rc_dq:.1f} kN | Rc Teixeira: {rc_tx:.1f} kN<br/>
-            Capacidade Resistente Adotada (R_c): <font color='green'><b>{rc_adotada:.1f} kN</b></font> (Situação: {'OK' if rc_adotada >= carga_total_resistir else 'Cravado na Prof. Mínima'})<br/><br/>
+            Capacidade Resistente Adotada (R_c): <font color='green'><b>{rc_adotada:.1f} kN</b></font> (Situação: {status})<br/><br/>
             """
         else:
             dados_pilar += "<b>2. Verificação Geotécnica</b><br/>Terreno não importado. Assumida profundidade teórica mínima.<br/><br/>"
@@ -724,30 +770,34 @@ if st.session_state.df_projeto is not None:
         df["X_m"] = df["X_cm"].fillna(0) / 100.0
         df["Y_m"] = df["Y_cm"].fillna(0) / 100.0
         
-        df["Diametro_m"] = B
+        # Ignora a secção lida do DXF e obriga a usar o B introduzido manualmente
+        df["Diametro_m"] = B 
+        
         df["ne"] = pd.to_numeric(df.get("ne", 1), errors='coerce').fillna(1)
         df["Carga_Max_tf"] = pd.to_numeric(df.get("Carga_Max_tf", 0.0), errors='coerce').fillna(0.0)
         df["Carga_por_Estaca_kN"] = (df["Carga_Max_tf"] * 10) / df["ne"]
 
         profundidades, pesos_aco, detalhes_armadura = [], [], []
         pesos_long_estaca, pesos_estribo_estaca = [], []
-        atritos_negativos, cargas_totais_estaca, status_lista = [], [], []
+        atritos_negativos, cargas_totais_estaca, status_estacas = [], [], []
 
         df_spt_atual = dados_terreno[furo_selecionado] if furo_selecionado and furo_selecionado in dados_terreno else None
         if df_spt_atual is None: st.warning("⚠️ Sem Terreno (.utea). Assumindo a Profundidade Mínima para orçamento.")
 
         for index, row in df.iterrows():
             if df_spt_atual is not None:
-                prof, p_neg, status = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo, tem_atrito_neg, h_aterro, metodo_construtivo, secao) 
+                # Passa a carga TOTAL do bloco para poder calcular recomendação de número de estacas (ne)
+                carga_total_bloco_kn = row["Carga_Max_tf"] * 10
+                prof, p_neg, status = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], carga_total_bloco_kn, criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo, tem_atrito_neg, h_aterro, metodo_construtivo, secao) 
             else:
                 prof = prof_minima_global
                 p_neg = 0.0
-                status = "⚠️ Sem Terreno"
+                status = "Sem Terreno"
                 
             profundidades.append(prof)
             atritos_negativos.append(p_neg)
             cargas_totais_estaca.append(row["Carga_por_Estaca_kN"] + p_neg)
-            status_lista.append(status)
+            status_estacas.append(status)
             
             peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual, secao)
             
@@ -757,6 +807,7 @@ if st.session_state.df_projeto is not None:
             detalhes_armadura.append(f"{num_barras} Φ {bitola} (L={comp_gaiola:.1f}m)")
                 
         df["Profundidade_m"] = profundidades
+        df["Status"] = status_estacas
         df["Atrito_Negativo_kN"] = atritos_negativos
         df["Carga_Total_Estaca_kN"] = cargas_totais_estaca
         df["Peso_Aco_kg"] = pesos_aco
@@ -766,7 +817,6 @@ if st.session_state.df_projeto is not None:
         df["Fck_MPa"] = fck_concreto
         df["Bitola_Long_mm"] = bitola
         df["Bitola_Estribo_mm"] = bitola_estribo
-        df["Status"] = status_lista
 
         total_blocos = len(df)
         total_estacas = df["ne"].sum()
@@ -798,7 +848,7 @@ if st.session_state.df_projeto is not None:
         try:
             fig = px.scatter(
                 df, x="X_m", y="Y_m", text="Pilar", size="Tamanho_Visual", color="Profundidade_m", 
-                hover_data={"Carga_Max_tf": True, "ne": True, "Diametro_m": True, "Profundidade_m": True, "Carga_Total_Estaca_kN": True, "Armadura_Principal": True, "Status": True, "X_m": False, "Y_m": False, "Tamanho_Visual": False},
+                hover_data={"Carga_Max_tf": True, "ne": True, "Diametro_m": True, "Profundidade_m": True, "Status": True, "Carga_Total_Estaca_kN": True, "Armadura_Principal": True, "X_m": False, "Y_m": False, "Tamanho_Visual": False},
                 labels={"Carga_Max_tf": "Carga(tf)", "Carga_Total_Estaca_kN": "Carga_Cálculo(kN)", "ne": "Estacas", "Profundidade_m": "Prof. (m)", "Armadura_Principal": "Armadura"},
                 color_continuous_scale=px.colors.diverging.RdYlBu_r 
             )
