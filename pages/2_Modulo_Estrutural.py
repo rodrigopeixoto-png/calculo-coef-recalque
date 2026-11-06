@@ -49,12 +49,11 @@ FATORES_CONSTRUTIVOS = {
 st.set_page_config(page_title="Módulo Estrutural - DXF", page_icon="🏗️", layout="wide")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO DE LEITURA DO DXF (COM AUTO-ESCALA E PREVENÇÃO DE CORRUPÇÃO)
+# FUNÇÃO DE LEITURA DO DXF
 # -----------------------------------------------------------------------------
 def processar_dxf(file_bytes):
     tmp_path = None
     try:
-        # Grava ficheiro temporário para o ezdxf ler nativamente (evita erros binários)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
@@ -76,11 +75,9 @@ def processar_dxf(file_bytes):
         df_textos = pd.DataFrame(textos)
         if df_textos.empty: return pd.DataFrame(), "O arquivo DXF não contém entidades de texto válidas."
 
-        # Identifica os nomes de pilares prováveis (P1, P20, etc)
         df_pilares = df_textos[df_textos['Texto'].str.match(r'^P\s*[-_]?\s*\d+$', case=False, na=False)].copy()
         if df_pilares.empty: return df_textos, "DIAGNOSTICO"
 
-        # AUTO-ESCALA Y (Ajusta-se ao espaçamento de linhas de qualquer CAD)
         df_textos = df_textos.sort_values(by='Y', ascending=False).reset_index(drop=True)
         y_valores_unicos = np.sort(df_textos['Y'].unique())
         diferencas_y = np.diff(y_valores_unicos)
@@ -97,7 +94,7 @@ def processar_dxf(file_bytes):
             carga_pilar = None
             for _, txt_cand in textos_linha.iterrows():
                 val_str = txt_cand['Texto'].replace(',', '.')
-                if 'x' in val_str.lower() or 'X' in val_str: continue # Ignora seções 25x35
+                if 'x' in val_str.lower() or 'X' in val_str: continue 
                 try:
                     carga_val = float(val_str)
                     if carga_val > 0:
@@ -108,7 +105,7 @@ def processar_dxf(file_bytes):
                     
             if carga_pilar is not None:
                 dados_pilares.append({
-                    'Pilar': nome, 'Carga Vertical (tf)': carga_pilar, 'X': x_p, 'Y': y_p
+                    'Pilar': nome, 'Carga Vertical (tf)': carga_pilar
                 })
 
         df_final = pd.DataFrame(dados_pilares)
@@ -134,7 +131,6 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
     df["N_SPT"] = pd.to_numeric(df["N_SPT"], errors="coerce").fillna(1)
     df["Tipo de Solo"] = df["Tipo de Solo"].fillna("Argila")
     
-    # Trava de segurança N_SPT=2 para aterros fracos
     mascara_aterro_fraco = (df["Tipo de Solo"] == "Aterro") & (df["N_SPT"] < 2)
     df.loc[mascara_aterro_fraco, "N_SPT"] = 2
     df["N_corr"] = df["N_SPT"].apply(lambda x: min(x, 50))
@@ -211,30 +207,6 @@ def calc_estrutural_base(B, secao, fck, fyk, taxa_armadura, bitola_long):
     
     return Area_c, n_barras, As_total, M_rd
 
-def plot_planta(df_resultados, B, secao):
-    if df_resultados.empty: return None
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for _, row in df_resultados.iterrows():
-        x, y = row['X'], row['Y']
-        status = row['Status']
-        cor = '#22c55e' if 'OK' in status else '#ef4444'
-        if secao == "Circular":
-            ax.add_patch(Circle((x, y), B/2, color=cor, alpha=0.6))
-            ax.add_patch(Circle((x, y), B/2, fill=False, color='black', lw=1))
-        else:
-            ax.add_patch(Rectangle((x - B/2, y - B/2), B, B, color=cor, alpha=0.6))
-            ax.add_patch(Rectangle((x - B/2, y - B/2), B, B, fill=False, color='black', lw=1))
-        ax.text(x, y + B/2 + 0.1, row['Pilar'], ha='center', va='bottom', fontsize=8, fontweight='bold')
-        
-    ax.set_aspect('equal')
-    ax.autoscale_view()
-    ax.grid(True, linestyle='--', alpha=0.3)
-    ax.set_title(f"Planta de Fundações - Estacas {secao} (B = {B}m)", pad=20)
-    ax.set_xlabel("Eixo X (m)")
-    ax.set_ylabel("Eixo Y (m)")
-    fig.tight_layout()
-    return fig
-
 def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_estribo_mm, espacamento_estribo_cm, M_rd, fck, fyk, Area_c, As, carga_V, momento_max):
     fig = plt.figure(figsize=(11, 4))
     gs = fig.add_gridspec(1, 3, width_ratios=[1, 0.6, 1.4])
@@ -273,7 +245,7 @@ def plot_estrutural_combinado(B_m, secao_tipo, n_barras, bitola_long_mm, bitola_
 
     # 2. Perfil Simplificado
     ax2 = fig.add_subplot(gs[1])
-    comp_estaca = 5.0 # Representativo
+    comp_estaca = 5.0 
     raio_arm = B_m/2 - cob
     ax2.plot([-B_m/2, -B_m/2], [0, -comp_estaca], color='black', lw=1.5)
     ax2.plot([B_m/2, B_m/2], [0, -comp_estaca], color='black', lw=1.5)
@@ -358,7 +330,7 @@ def gerar_ifc_estrutural(df_res, B, secao, cota_assentamento):
     try:
         model = ifcopenshell.file()
         project = model.createIfcProject(GlobalId=ifcopenshell.guid.new(), Name="Fundações UTEA")
-        context = model.createIfcGeometricRepresentationContext(ContextType="Model", CoordinateSpaceDimension=3)
+        model.createIfcGeometricRepresentationContext(ContextType="Model", CoordinateSpaceDimension=3)
         buffer = io.BytesIO()
         model.write(buffer)
         return buffer.getvalue()
@@ -371,7 +343,7 @@ def gerar_ifc_estrutural(df_res, B, secao, cota_assentamento):
 st.title("🏗️ Módulo Estrutural - Otimização de Pilares")
 st.write("Mapeie as cargas do Eberick (DXF) e encontre a profundidade ideal da estaca para cada pilar.")
 
-# SIDEBAR: Configurações e Uploads
+# SIDEBAR
 st.sidebar.header("1. 📂 Projeto Geotécnico")
 upload_utea = st.sidebar.file_uploader("Upload do ficheiro (.utea)", type=["utea", "json"])
 
@@ -404,7 +376,7 @@ cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value
 criterio_q_adm = st.sidebar.selectbox("Critério de Carga:", ["Média dos Métodos", "Menor Valor (Mais Conservador)", "Apenas Aoki-Velloso", "Apenas Décourt-Quaresma", "Apenas Teixeira"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("4. 🔧 Parâmetros de Armadura (Opcional)")
+st.sidebar.header("4. 🔧 Parâmetros de Armadura")
 fck = st.sidebar.number_input("Resistência do Concreto (fck) em MPa", min_value=15.0, value=25.0, step=5.0)
 fyk = st.sidebar.number_input("Resistência do Aço (fyk) em MPa", min_value=250.0, value=500.0, step=50.0)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=0.5, step=0.1)
@@ -450,7 +422,7 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                         status = "✅ OK"
                         
                     resultados_finais.append({
-                        "Pilar": nome, "X": pilar["X"], "Y": pilar["Y"],
+                        "Pilar": nome,
                         "Carga Atuante (kN)": f"{carga_pura:.1f}",
                         "Atrito Negativo (kN)": f"{P_neg:.1f}" if P_neg > 0 else "-",
                         "Carga Total (kN)": f"{carga_total:.1f}",
@@ -461,18 +433,17 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                 
                 df_resultados = pd.DataFrame(resultados_finais)
                 
-                # --- INTERFACE COM ABAS COMPLETAS ---
-                tab_tabela, tab_planta, tab_estrutural = st.tabs(["📋 Relatório Tabular", "🗺️ Planta de Locação", "🏗️ Detalhamento Estrutural"])
+                tab_tabela, tab_estrutural = st.tabs(["📋 Relatório Tabular", "🏗️ Detalhamento Estrutural"])
                 
                 with tab_tabela:
                     st.success(f"Tabela de cargas processada com sucesso! {len(df_cargas)} pilares encontrados.")
                     st.write(f"Todos os pilares foram cruzados com a capacidade do **{furo_base_selecionado}**. Diâmetro adotado: **{B:.2f}m**.")
-                    st.dataframe(df_resultados.drop(columns=['X', 'Y']), use_container_width=True, hide_index=True)
+                    st.dataframe(df_resultados, use_container_width=True, hide_index=True)
                     
                     st.markdown("---")
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        csv_bytes = df_resultados.drop(columns=['X', 'Y']).to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                        csv_bytes = df_resultados.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
                         st.download_button("📥 Tabela Excel (CSV)", data=csv_bytes, file_name="otimizacao_pilares.csv", mime="text/csv", use_container_width=True)
                     with c2:
                         pdf_bytes = gerar_pdf_estrutural(df_resultados, furo_base_selecionado, B, secao, metodo_construtivo)
@@ -481,12 +452,6 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                         ifc_bytes = gerar_ifc_estrutural(df_resultados, B, secao, cota_assentamento)
                         st.download_button("🧱 Modelo 3D (IFC)", data=ifc_bytes, file_name="fundacoes.ifc", mime="application/octet-stream", use_container_width=True)
                 
-                with tab_planta:
-                    st.markdown("### Locação dos Pilares e Status de Capacidade")
-                    fig_planta = plot_planta(df_resultados, B, secao)
-                    if fig_planta:
-                        st.pyplot(fig_planta)
-
                 with tab_estrutural:
                     st.markdown("### Verificação de Armadura e Envoltória Resistente")
                     pilar_selecionado = st.selectbox("Selecione o Pilar para detalhar:", df_resultados['Pilar'].tolist())
