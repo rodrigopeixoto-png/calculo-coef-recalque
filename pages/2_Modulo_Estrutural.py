@@ -154,76 +154,121 @@ def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bit
     return peso_long, peso_estribo, n_barras, L_arm
 
 # -----------------------------------------------------------------------------
-# RADAR GEOMÉTRICO (DXF) - ATUALIZADO PARA LER LINHA A LINHA
+# RADAR GEOMÉTRICO (DXF) - ATUALIZADO PARA SEPARAR TABELA DE PLANTA FÍSICA
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
-            tmp.write(dxf_bytes)
-            tmp_path = tmp.name
-
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
+        tmp.write(dxf_bytes)
+        tmp_path = tmp.name
+    try: 
         doc = ezdxf.readfile(tmp_path)
-        msp = doc.modelspace()
+    finally:
+        if os.path.exists(tmp_path): os.remove(tmp_path)
+    
+    textos_brutos = []
+    def limpar_texto(txt):
+        return re.sub(r'\\[A-Za-z0-9~]+;', '', str(txt).replace('\\P', ' ').replace('\\p', ' ')).strip().replace('{', '').replace('}', '')
 
-        textos = []
-        for e in msp.query('TEXT MTEXT'):
-            if e.dxftype() == 'TEXT':
-                texto = e.dxf.text.strip()
-                x, y = e.dxf.insert.x, e.dxf.insert.y
-            elif e.dxftype() == 'MTEXT':
-                texto = e.text.strip()
-                x, y = e.dxf.insert.x, e.dxf.insert.y
-            if texto:
-                textos.append({'Texto': texto, 'X': x, 'Y': y})
+    for e in doc.modelspace():
+        if e.dxftype() in ('TEXT', 'MTEXT'):
+            t = limpar_texto(e.dxf.text if e.dxftype() == 'TEXT' else e.text)
+            if t: textos_brutos.append({'Texto': t, 'X': e.dxf.insert.x, 'Y': e.dxf.insert.y})
+        elif e.dxftype() == 'INSERT':
+            for attrib in e.attribs:
+                t = limpar_texto(attrib.dxf.text)
+                if t: textos_brutos.append({'Texto': t, 'X': attrib.dxf.insert.x, 'Y': attrib.dxf.insert.y})
+            block = doc.blocks.get(e.dxf.name)
+            if block:
+                for entity in block.query('TEXT MTEXT'):
+                    t = limpar_texto(entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text)
+                    if t: textos_brutos.append({'Texto': t, 'X': e.dxf.insert.x + entity.dxf.insert.x, 'Y': e.dxf.insert.y + entity.dxf.insert.y})
+
+    if not textos_brutos: return None, pd.DataFrame()
+    df_raw = pd.DataFrame(textos_brutos)
+    
+    headers_x = {'x': None, 'y': None, 'carga': None, 'ne': None, 'estaca': None}
+    for index, row in df_raw.iterrows():
+        val = str(row['Texto']).lower().strip()
+        if val in ['x', 'x(cm)', 'x (cm)', 'x(m)', 'x (m)', 'coord.x']: headers_x['x'] = row['X']
+        elif val in ['y', 'y(cm)', 'y (cm)', 'y(m)', 'y (m)', 'coord.y']: headers_x['y'] = row['X']
+        elif 'carga' in val and ('máx' in val or 'max' in val or 'tf' in val or 'kn' in val): headers_x['carga'] = row['X']
+        elif val == 'ne': headers_x['ne'] = row['X']
+        elif val == 'estaca': headers_x['estaca'] = row['X']
+
+    if headers_x['carga'] is None:
+        for index, row in df_raw.iterrows():
+            if 'carga' in str(row['Texto']).lower(): headers_x['carga'] = row['X']
+
+    pilares = df_raw[df_raw['Texto'].str.match(r'^P[-_A-Za-z]*\s*\d+$', case=False)].copy()
+    if len(pilares) == 0: return None, df_raw
+
+    # Auto-Escala Y e Separação da Tabela para a Planta Física
+    x_counts = pilares['X'].round(1).value_counts()
+    x_coluna_tabela = x_counts.idxmax() if not x_counts.empty else 0
+    pilares_tabela = pilares[abs(pilares['X'] - x_coluna_tabela) < 2.0].copy()
+    pilares_planta = pilares[abs(pilares['X'] - x_coluna_tabela) >= 2.0].copy()
+
+    y_vals = sorted(pilares_tabela['Y'].unique(), reverse=True)
+    tolerancia_y = np.median([abs(y_vals[i] - y_vals[i+1]) for i in range(len(y_vals)-1)]) * 0.40 if len(y_vals) > 1 else 15.0
+    
+    linhas_dados = []
+    
+    for _, p in pilares_tabela.iterrows():
+        linha_textos = df_raw[(abs(df_raw['Y'] - p['Y']) <= tolerancia_y) & (df_raw['X'] > p['X'] - 1.0)].copy()
         
-        df_textos = pd.DataFrame(textos)
-        if df_textos.empty: return None, pd.DataFrame()
-
-        df_pilares = df_textos[df_textos['Texto'].str.match(r'^P\s*[-_]?\s*\d+$', case=False, na=False)].copy()
-        if df_pilares.empty: return None, df_textos
-
-        df_textos = df_textos.sort_values(by='Y', ascending=False).reset_index(drop=True)
-        y_valores_unicos = np.sort(df_textos['Y'].unique())
-        diferencas_y = np.diff(y_valores_unicos)
-        diferencas_y = diferencas_y[diferencas_y > 0.1]
-        tolerancia_y = min(diferencas_y) * 0.45 if len(diferencas_y) > 0 else 1.0
-
-        linhas_dados = []
-        for _, pilar in df_pilares.iterrows():
-            nome = pilar['Texto']
-            y_p, x_p = pilar['Y'], pilar['X']
-            
-            textos_linha = df_textos[(abs(df_textos['Y'] - y_p) <= tolerancia_y) & (df_textos['X'] > x_p)].sort_values(by='X')
-            
-            carga_pilar = None
-            for _, txt_cand in textos_linha.iterrows():
-                val_str = txt_cand['Texto'].replace(',', '.')
+        def pega_valor_header(chave):
+            x_alvo = headers_x[chave]
+            if x_alvo is None or len(linha_textos) == 0: return None
+            linha_textos['Dist'] = abs(linha_textos['X'] - x_alvo)
+            texto_perto = linha_textos.loc[linha_textos['Dist'].idxmin()]
+            texto_final = str(texto_perto['Texto']).strip()
+            if texto_final.lower() not in ['x', 'y', 'x(cm)', 'y(cm)', 'ne', 'estaca']: return texto_final
+            return None
+        
+        carga_tf = pega_valor_header('carga')
+        
+        if carga_tf is None:
+            linha_textos_dir = linha_textos[linha_textos['X'] > p['X']].sort_values(by='X')
+            for _, txt_cand in linha_textos_dir.iterrows():
+                val_str = str(txt_cand['Texto']).replace(',', '.')
                 if 'x' in val_str.lower() or 'X' in val_str: continue 
                 try:
                     carga_val = float(val_str)
                     if carga_val > 0:
-                        carga_pilar = carga_val
+                        carga_tf = carga_val
                         break
                 except ValueError:
                     continue
-                    
-            if carga_pilar is not None:
-                linhas_dados.append({
-                    "Pilar": nome, "X_cm": x_p * 100, "Y_cm": y_p * 100,
-                    "Carga_Max_tf": carga_pilar, "ne": 1, "Estaca": "N/A"
-                })
-
-        df_final = pd.DataFrame(linhas_dados)
-        if df_final.empty: return None, df_textos
+        
+        x_val = pega_valor_header('x')
+        y_val = pega_valor_header('y')
+        
+        if x_val is None or y_val is None:
+            nome_p = str(p['Texto']).strip()
+            coords = pilares_planta[pilares_planta['Texto'].str.strip().str.upper() == nome_p.upper()]
+            if len(coords) > 0:
+                x_val = str(coords.iloc[0]['X'] * 100) 
+                y_val = str(coords.iloc[0]['Y'] * 100)
+                
+        linhas_dados.append({
+            "Pilar": str(p['Texto']).strip(), 
+            "X_cm": x_val, 
+            "Y_cm": y_val,
+            "Carga_Max_tf": carga_tf, 
+            "ne": pega_valor_header('ne'), 
+            "Estaca": pega_valor_header('estaca')
+        })
+        
+    df_final = pd.DataFrame(linhas_dados)
+    
+    for col in ["X_cm", "Y_cm", "Carga_Max_tf", "ne"]:
+        if col in df_final.columns: 
+            df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace(',', '.').str.extract(r'([-+]?\d*\.?\d+)')[0], errors='coerce')
             
-        return df_final, df_textos
-    except Exception as e:
-        return None, pd.DataFrame()
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try: os.remove(tmp_path)
-            except: pass
+    df_final = df_final.dropna(subset=['Pilar'])
+    
+    if len(df_final) > 0: return df_final, df_raw
+    return None, df_raw
 
 # -----------------------------------------------------------------------------
 # MOTOR DE EXPORTAÇÃO BIM (.IFC4) - COMPATIBILIDADE TOTAL EBERICK / VISUS 5D
