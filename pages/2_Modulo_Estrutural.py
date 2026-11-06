@@ -41,21 +41,18 @@ FATORES_CONSTRUTIVOS = {
 st.set_page_config(page_title="Módulo Estrutural - DXF", page_icon="🏗️", layout="wide")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO DE LEITURA DO DXF (COM CLUSTERING Y INTELIGENTE)
+# FUNÇÃO DE LEITURA DO DXF (COM AUTO-ESCALA)
 # -----------------------------------------------------------------------------
 def processar_dxf(file_bytes):
     tmp_path = None
     try:
-        # Salva em ficheiro temporário para evitar erros de codificação binária nativa do Eberick
         with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
-        # Lê com o motor nativo do ezdxf
         doc = ezdxf.readfile(tmp_path)
         msp = doc.modelspace()
 
-        # Extrair todos os textos (TEXT e MTEXT) e as suas coordenadas X, Y
         textos = []
         for e in msp.query('TEXT MTEXT'):
             if e.dxftype() == 'TEXT':
@@ -64,7 +61,6 @@ def processar_dxf(file_bytes):
             elif e.dxftype() == 'MTEXT':
                 texto = e.text.strip()
                 x, y = e.dxf.insert.x, e.dxf.insert.y
-            
             if texto:
                 textos.append({'Texto': texto, 'X': x, 'Y': y})
         
@@ -72,61 +68,54 @@ def processar_dxf(file_bytes):
         if df_textos.empty:
             return pd.DataFrame(), "O arquivo DXF não contém entidades de texto válidas."
 
-        # Agrupar textos que estão na mesma linha horizontal (tolerância de Y)
-        df_textos = df_textos.sort_values(by='Y', ascending=False).reset_index(drop=True)
+        # Identifica os nomes de pilares prováveis (P1, P20, etc)
+        df_pilares = df_textos[df_textos['Texto'].str.match(r'^P\s*[-_]?\s*\d+$', case=False, na=False)].copy()
         
-        linhas_agrupadas = []
-        linha_atual = []
-        y_ref = None
-        tolerancia_y = 1.5 # Tolerância para considerar que textos estão na mesma linha
+        if df_pilares.empty:
+            return df_textos, "DIAGNOSTICO"
 
-        for _, row in df_textos.iterrows():
-            if y_ref is None:
-                y_ref = row['Y']
-                linha_atual.append(row)
-            elif abs(row['Y'] - y_ref) <= tolerancia_y:
-                linha_atual.append(row)
-            else:
-                linhas_agrupadas.append(linha_atual)
-                y_ref = row['Y']
-                linha_atual = [row]
-        if linha_atual:
-            linhas_agrupadas.append(linha_atual)
+        # 1. AUTO-ESCALA: Descobre a distância vertical (Y) mínima entre linhas
+        y_valores_unicos = np.sort(df_textos['Y'].unique())
+        diferencas_y = np.diff(y_valores_unicos)
+        diferencas_y = diferencas_y[diferencas_y > 0.1] # Filtra pequenos ruidos do CAD
+        
+        # A margem de tolerância será metade do espaçamento entre as linhas da tabela
+        tolerancia_y = min(diferencas_y) * 0.45 if len(diferencas_y) > 0 else 1.0
 
         dados_pilares = []
         
-        # Procurar o padrão "Pilar" + "Carga" linha a linha da esquerda para a direita
-        for linha in linhas_agrupadas:
-            linha_ordenada = sorted(linha, key=lambda d: d['X'])
-            textos_linha = [t['Texto'] for t in linha_ordenada]
+        # 2. Ler pilar a pilar
+        for _, pilar in df_pilares.iterrows():
+            nome = pilar['Texto']
+            y_p = pilar['Y']
+            x_p = pilar['X']
             
-            nome_pilar = None
+            # Filtra todos os textos que estão na mesma linha do Pilar e à sua direita
+            textos_linha = df_textos[
+                (abs(df_textos['Y'] - y_p) <= tolerancia_y) & 
+                (df_textos['X'] > x_p)
+            ].sort_values(by='X')
+            
             carga_pilar = None
             
-            for i, txt in enumerate(textos_linha):
-                # Deteta nomes como P1, P20, Pilar 1
-                if re.match(r'^P\s*[-]?\s*\d+', txt, re.IGNORECASE):
-                    nome_pilar = txt
+            for _, txt_cand in textos_linha.iterrows():
+                val_str = txt_cand['Texto'].replace(',', '.')
+                # Ignorar campos de secção (ex: 25x35)
+                if 'x' in val_str.lower() or 'X' in val_str:
+                    continue
+                try:
+                    carga_val = float(val_str)
+                    if carga_val > 0:
+                        carga_pilar = carga_val
+                        break # Encontrou a carga, salta fora da procura desta linha!
+                except ValueError:
+                    continue
                     
-                    # Procura a primeira carga à direita ignorando secções (ex: 25x35)
-                    for j in range(i+1, len(textos_linha)):
-                        txt_candidato = textos_linha[j].replace(',', '.')
-                        if 'x' in txt_candidato.lower() or 'X' in txt_candidato:
-                            continue
-                        try:
-                            carga_val = float(txt_candidato)
-                            if carga_val > 0:
-                                carga_pilar = carga_val
-                                break
-                        except ValueError:
-                            pass 
-                    
-                    if nome_pilar and carga_pilar is not None:
-                        dados_pilares.append({
-                            'Pilar': nome_pilar,
-                            'Carga Vertical (tf)': carga_pilar
-                        })
-                        break 
+            if carga_pilar is not None:
+                dados_pilares.append({
+                    'Pilar': nome,
+                    'Carga Vertical (tf)': carga_pilar
+                })
 
         df_final = pd.DataFrame(dados_pilares)
         
@@ -138,9 +127,7 @@ def processar_dxf(file_bytes):
 
     except Exception as e:
         return pd.DataFrame(), f"Erro ao processar o ficheiro DXF: {e}"
-    
     finally:
-        # Garante que o ficheiro temporário é apagado para não encher o disco
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
@@ -153,7 +140,6 @@ def processar_dxf(file_bytes):
 def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_adm):
     df = df_spt.copy()
     
-    # Prepara a tabela
     df = df.dropna(subset=['N_SPT']).copy()
     if df.empty:
         return None
@@ -161,18 +147,18 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
     df["N_SPT"] = pd.to_numeric(df["N_SPT"], errors="coerce").fillna(1)
     df["Tipo de Solo"] = df["Tipo de Solo"].fillna("Argila")
     
-    # Aproximação conservadora para Aterros fracos ou zerados
     mascara_aterro_fraco = (df["Tipo de Solo"] == "Aterro") & (df["N_SPT"] < 2)
     df.loc[mascara_aterro_fraco, "N_SPT"] = 2
     
     df["N_corr"] = df["N_SPT"].apply(lambda x: min(x, 50))
     
-    # Geometria
+    prof_maxima_furo = float(df["Profundidade (m)"].max())
+    comp_estaca_efetivo = max(0.0, prof_maxima_furo - cota_assentamento)
+
     Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
     Perimetro = np.pi * B if secao == "Circular" else 4 * B
     f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
 
-    # Funções auxiliares
     def get_dq_c(s):
         s = str(s).lower()
         if "areia" in s: return 400
@@ -192,7 +178,6 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
     else:
         alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
 
-    # Aoki
     def calc_aoki(row):
         solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
         rl = (solo["aoki_alpha"] * solo["aoki_K"] * row["N_corr"]) / f2
@@ -202,7 +187,6 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
 
     df[["Rp_aoki", "delta_Rl_aoki"]] = df.apply(calc_aoki, axis=1)
 
-    # Decourt e Teixeira
     df["N_dq"] = df["N_corr"].apply(lambda x: max(3, min(x, 50)))
     df["C_dq"] = df["Tipo de Solo"].apply(get_dq_c)
     df["delta_Rl_dq"] = beta_dq * 10 * ((df["N_dq"] / 3) + 1) * Perimetro * 1.0
@@ -212,7 +196,6 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
     df["delta_Rl_t"] = beta_t * df["N_corr"] * Perimetro * 1.0
     df["Rp_t"] = df["alpha_teix"] * df["N_corr"] * Area_c
 
-    # Atrito Negativo (Automático se Aterro)
     mascara_aterro = df["Tipo de Solo"] == "Aterro"
     P_neg_adotado = 0.0
     
@@ -230,7 +213,6 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
         else:
             P_neg_adotado = max(P_neg_aoki, P_neg_dq, P_neg_t)
 
-    # Acumulados e Admissíveis Metro a Metro
     df["Rl_Aoki_Acum"] = df["delta_Rl_aoki"].cumsum()
     df["Rc_Aoki"] = (df["Rp_aoki"] + df["Rl_Aoki_Acum"]) / 2.0
     
@@ -257,7 +239,6 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
 st.title("🏗️ Módulo Estrutural - Otimização de Pilares")
 st.write("Mapeie as cargas do Eberick (DXF) e encontre a profundidade ideal da estaca para cada pilar.")
 
-# SIDEBAR: Configurações e Uploads
 st.sidebar.header("1. 📂 Projeto Geotécnico")
 upload_utea = st.sidebar.file_uploader("Upload do ficheiro (.utea)", type=["utea", "json"])
 
@@ -292,7 +273,7 @@ criterio_q_adm = st.sidebar.selectbox("Critério de Carga:", ["Média dos Métod
 # PROCESSAMENTO DOS DADOS
 # -----------------------------------------------------------------------------
 if upload_dxf is not None and furo_base_selecionado is not None:
-    with st.spinner("A ler o DXF com motor de Clustering Y..."):
+    with st.spinner("A ler o DXF com motor de Auto-escala..."):
         df_cargas, erro_dxf = processar_dxf(upload_dxf.getvalue())
         
         if erro_dxf == "DIAGNOSTICO":
@@ -303,7 +284,6 @@ if upload_dxf is not None and furo_base_selecionado is not None:
         else:
             st.success(f"Tabela de cargas processada com sucesso! {len(df_cargas)} pilares encontrados.")
             
-            # Obter a curva de capacidade do furo selecionado
             df_furo_base = projeto_furos[furo_base_selecionado]
             df_curva, P_neg = calcular_curva_capacidade(df_furo_base, B, metodo_construtivo, secao, criterio_q_adm)
             
@@ -313,7 +293,6 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                 prof_maxima = df_curva["Profundidade (m)"].max()
                 cap_maxima = df_curva["Rc_Adotada"].iloc[-1]
                 
-                # Calcular a profundidade necessária para cada pilar
                 resultados_finais = []
                 for _, pilar in df_cargas.iterrows():
                     nome = pilar["Pilar"]
@@ -324,7 +303,6 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                         prof_necessaria = f"FALHA (> {prof_maxima}m)"
                         status = "❌ Aumentar Secção"
                     else:
-                        # Encontra a primeira linha onde a capacidade >= carga total
                         linha_ideal = df_curva[df_curva["Rc_Adotada"] >= carga_total].iloc[0]
                         prof_necessaria = linha_ideal["Profundidade (m)"]
                         status = "✅ OK"
@@ -345,16 +323,14 @@ if upload_dxf is not None and furo_base_selecionado is not None:
                 df_resultados = pd.DataFrame(resultados_finais)
                 st.dataframe(df_resultados, use_container_width=True, hide_index=True)
                 
-                # Botão para exportar o relatório para Excel
-                buffer_excel = io.BytesIO()
-                with pd.ExcelWriter(buffer_excel, engine='xlsxwriter') as writer:
-                    df_resultados.to_excel(writer, index=False, sheet_name='Otimização Estacas')
+                # BOTÃO CSV À PROVA DE BALAS (Para evitar o erro do xlsxwriter)
+                csv_bytes = df_resultados.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
                 
                 st.download_button(
-                    label="📥 Baixar Tabela de Pilares em Excel",
-                    data=buffer_excel.getvalue(),
-                    file_name="otimizacao_pilares.xlsx",
-                    mime="application/vnd.ms-excel",
+                    label="📥 Baixar Tabela de Pilares (CSV Excel)",
+                    data=csv_bytes,
+                    file_name="otimizacao_pilares.csv",
+                    mime="text/csv",
                     type="primary"
                 )
 elif upload_dxf is None:
