@@ -4,6 +4,8 @@ import numpy as np
 import io
 import json
 import re
+import os
+import tempfile
 import ezdxf
 
 # -----------------------------------------------------------------------------
@@ -42,10 +44,15 @@ st.set_page_config(page_title="Módulo Estrutural - DXF", page_icon="🏗️", l
 # FUNÇÃO DE LEITURA DO DXF (COM CLUSTERING Y INTELIGENTE)
 # -----------------------------------------------------------------------------
 def processar_dxf(file_bytes):
+    tmp_path = None
     try:
-        # CONVERSÃO DE BYTES PARA TEXTO (Corrige o erro do ezdxf)
-        texto_dxf = file_bytes.decode('utf-8', errors='ignore')
-        doc = ezdxf.read(io.StringIO(texto_dxf))
+        # Salva em ficheiro temporário para evitar erros de codificação binária nativa do Eberick
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+
+        # Lê com o motor nativo do ezdxf
+        doc = ezdxf.readfile(tmp_path)
         msp = doc.modelspace()
 
         # Extrair todos os textos (TEXT e MTEXT) e as suas coordenadas X, Y
@@ -131,6 +138,14 @@ def processar_dxf(file_bytes):
 
     except Exception as e:
         return pd.DataFrame(), f"Erro ao processar o ficheiro DXF: {e}"
+    
+    finally:
+        # Garante que o ficheiro temporário é apagado para não encher o disco
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
 
 # -----------------------------------------------------------------------------
 # MOTOR GEOTÉCNICO SIMPLIFICADO PARA CALCULAR A CURVA DO FURO BASE
@@ -144,6 +159,12 @@ def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_a
         return None
         
     df["N_SPT"] = pd.to_numeric(df["N_SPT"], errors="coerce").fillna(1)
+    df["Tipo de Solo"] = df["Tipo de Solo"].fillna("Argila")
+    
+    # Aproximação conservadora para Aterros fracos ou zerados
+    mascara_aterro_fraco = (df["Tipo de Solo"] == "Aterro") & (df["N_SPT"] < 2)
+    df.loc[mascara_aterro_fraco, "N_SPT"] = 2
+    
     df["N_corr"] = df["N_SPT"].apply(lambda x: min(x, 50))
     
     # Geometria
