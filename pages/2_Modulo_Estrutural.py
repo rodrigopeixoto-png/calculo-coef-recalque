@@ -50,19 +50,31 @@ PARAMETROS_SOLO = {
     "Argila Siltosa":        {"aoki_K": 220,  "aoki_alpha": 0.040}
 }
 
+FATORES_CONSTRUTIVOS = {
+    "Franki": {"F1": 2.5, "F2": 5.0},
+    "Metálica": {"F1": 1.8, "F2": 4.0},
+    "Pré-moldada": {"F1": 1.8, "F2": 4.0},
+    "Escavada": {"F1": 3.0, "F2": 6.0},
+    "Raiz/Hélice": {"F1": 2.0, "F2": 4.0}
+}
+
 def get_dq_c(s): return 400 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 120)
 def get_teix_alpha(s): return 250 if "areia" in str(s).lower() else (200 if "silte" in str(s).lower() else 150)
 
-def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo, tem_atrito_neg=False, h_aterro=0.0):
+def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio, prof_minima, ne, verificar_bulbo, tem_atrito_neg=False, h_aterro=0.0, metodo_construtivo="Raiz/Hélice", secao="Circular"):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
-    Area_c = (np.pi * diametro_m**2) / 4 
-    Perimetro = np.pi * diametro_m 
-    f1, f2, alfa_dq, beta_dq, beta_t = 2.0, 4.0, 0.3, 1.0, 6.0 
+    Area_c = (np.pi * diametro_m**2) / 4 if secao == "Circular" else diametro_m**2
+    Perimetro = np.pi * diametro_m if secao == "Circular" else 4 * diametro_m
+    f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
+    
+    if "Escavada" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
+    elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
+    else: alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
 
     def proc_solo_aoki(row):
         solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
@@ -91,7 +103,6 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
         p_neg_t = df_spt.loc[mascara_aterro, "delta_Rl_t"].sum()
         p_neg_estaca = (p_neg_aoki + p_neg_dq + p_neg_t) / 3.0 if criterio == "Média dos Métodos" else max(p_neg_aoki, p_neg_dq, p_neg_t)
 
-        # Zera a resistência lateral no aterro
         df_spt.loc[mascara_aterro, "delta_Rl_aoki"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_dq"] = 0.0
         df_spt.loc[mascara_aterro, "delta_Rl_t"] = 0.0
@@ -105,7 +116,6 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
 
     col_adotada = "Rc Média" if criterio == "Média dos Métodos" else ("Rc Menor" if criterio == "Menor Valor (Mais Conservador)" else ("Rc Aoki" if "Aoki" in criterio else ("Rc DQ" if "Décourt" in criterio else "Rc Teix")))
 
-    # A carga alvo total que a estaca precisa resistir no solo firme:
     carga_alvo_efetiva = carga_alvo_kn + p_neg_estaca
     limite_prof_min = max(prof_minima, (h_aterro + 1.0) if tem_atrito_neg else prof_minima)
 
@@ -140,21 +150,24 @@ def calcular_profundidade_estaca(df_spt_raw, diametro_m, carga_alvo_kn, criterio
         
     return max(prof_calc, limite_prof_min), p_neg_estaca
 
-def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual):
-    Area_c = (np.pi * diametro_m**2) / 4
+def calcular_peso_aco_estaca(diametro_m, prof_m, taxa_armadura, bitola_long, bitola_estribo, espacamento, l_manual, secao="Circular"):
+    Area_c = (np.pi * diametro_m**2) / 4 if secao == "Circular" else diametro_m**2
     area_barra = (np.pi * (bitola_long / 1000)**2) / 4  
     n_barras = max(int(np.ceil((taxa_armadura / 100) * Area_c / area_barra)), 6)
+    if secao == "Quadrada": n_barras = max(n_barras + (4 - n_barras % 4) if n_barras % 4 != 0 else n_barras, 8)
+    
     As_total = n_barras * area_barra
     
     L_arm = prof_m if l_manual is None else min(l_manual, prof_m)
     peso_long = As_total * L_arm * 7850
     qtd_estribos = int(L_arm / (espacamento / 100))
-    peso_estribo = qtd_estribos * (np.pi * (diametro_m - 0.10)) * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
+    perim_estribo = np.pi * (diametro_m - 0.10) if secao == "Circular" else 4 * (diametro_m - 0.10)
+    peso_estribo = qtd_estribos * perim_estribo * ((np.pi * (bitola_estribo / 1000)**2) / 4) * 7850
     
     return peso_long, peso_estribo, n_barras, L_arm
 
 # -----------------------------------------------------------------------------
-# RADAR GEOMÉTRICO (DXF) - ATUALIZADO PARA SEPARAR TABELA DE PLANTA FÍSICA
+# RADAR GEOMÉTRICO (DXF) - ATUALIZADO (Ignora Cabeçalhos, Lê Linha a Linha e Extrai X,Y da Planta)
 # -----------------------------------------------------------------------------
 def extrair_tabela_do_dxf(dxf_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
@@ -432,16 +445,20 @@ def gerar_modelo_ifc(df_projeto):
 # -----------------------------------------------------------------------------
 # MOTOR DE GERAÇÃO DO MEMORIAL (PDF) PILAR A PILAR
 # -----------------------------------------------------------------------------
-def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_atrito_neg, h_aterro):
+def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_atrito_neg, h_aterro, metodo_construtivo, secao):
     df_spt = df_spt_raw.copy()
     df_spt["Profundidade (m)"] = pd.to_numeric(df_spt["Profundidade (m)"], errors='coerce').fillna(0)
     df_spt["N_SPT"] = pd.to_numeric(df_spt["N_SPT"], errors="coerce").fillna(1)
     df_spt["Tipo de Solo"] = df_spt["Tipo de Solo"].fillna("Argila")
     df_spt["N_corr"] = df_spt["N_SPT"].apply(lambda x: min(x, 50))
     
-    Area_c = (np.pi * diametro_m**2) / 4 
-    Perimetro = np.pi * diametro_m 
-    f1, f2, alfa_dq, beta_dq, beta_t = 2.0, 4.0, 0.3, 1.0, 6.0 
+    Area_c = (np.pi * diametro_m**2) / 4 if secao == "Circular" else diametro_m**2
+    Perimetro = np.pi * diametro_m if secao == "Circular" else 4 * diametro_m
+    f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
+    
+    if "Escavada" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
+    elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
+    else: alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
 
     def proc_solo_aoki(row):
         solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
@@ -484,7 +501,7 @@ def obter_capacidades_na_cota(df_spt_raw, diametro_m, prof_alvo, criterio, tem_a
     if len(linha) > 0: return linha.iloc[0], p_neg_estaca
     return df_spt.iloc[-1], p_neg_estaca
 
-def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, criterio, prof_minima, verificar_bulbo, tem_atrito_neg, h_aterro):
+def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, criterio, prof_minima, verificar_bulbo, tem_atrito_neg, h_aterro, construtivo, secao):
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     story, styles = [], getSampleStyleSheet()
@@ -500,6 +517,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
 
     story.append(Paragraph("<b>1. Parâmetros e Critérios Adotados</b>", h2_style))
     txt_param = f"• <b>Classe do Concreto Adotada:</b> C{fck}<br/>"
+    txt_param += f"• <b>Tipo de Fundação:</b> Estaca {construtivo} ({secao})<br/>"
     txt_param += f"• <b>Critério Geotécnico de Resistência:</b> {criterio}<br/>"
     txt_param += f"• <b>Profundidade Mínima Fixada:</b> {prof_minima} m<br/>"
     txt_param += f"• <b>Verificação da Zona de Influência (Bulbo de Tensões):</b> {'Ativada (Evita assentamento sobre camadas moles subjacentes)' if verificar_bulbo else 'Desativada'}<br/>"
@@ -539,7 +557,7 @@ def gerar_memorial_estrutural_pdf(df_projeto, df_spt_atual, config_global, fck, 
         prof = row['Profundidade_m']
         
         if df_spt_atual is not None:
-            cota_info, p_neg = obter_capacidades_na_cota(df_spt_atual, diam, prof, criterio, tem_atrito_neg, h_aterro)
+            cota_info, p_neg = obter_capacidades_na_cota(df_spt_atual, diam, prof, criterio, tem_atrito_neg, h_aterro, construtivo, secao)
             solo_tipo = cota_info["Tipo de Solo"]
             nspt = cota_info["N_SPT"]
             rc_aoki = cota_info["Rc Aoki"]
@@ -674,6 +692,10 @@ verificar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de 
 tem_atrito_neg = st.sidebar.checkbox("🚜 Considerar Atrito Negativo (Aterro)?", value=config_memoria.get("tem_atrito_neg", False), help="Adiciona a força de arrasto do aterro sobre as estacas e força a ancoragem em solo competente.")
 h_aterro = st.sidebar.number_input("Espessura do Aterro (m)", min_value=0.5, max_value=20.0, value=float(config_memoria.get("h_aterro", 3.0)), step=0.5) if tem_atrito_neg else 0.0
 
+# ----------------- NOVOS MENUS (Tipo de Estaca e Secção) -----------------
+metodo_construtivo = st.sidebar.selectbox("Método Construtivo:", list(FATORES_CONSTRUTIVOS.keys()), index=4)
+secao = st.sidebar.selectbox("Secção", ["Circular", "Quadrada"])
+
 def_fck = int(config_memoria.get("fck", 25))
 def_taxa = float(config_memoria.get("taxa_armadura", 0.5))
 def_bitola = float(config_memoria.get("bitola", 10.0))
@@ -746,7 +768,7 @@ if st.session_state.df_projeto is not None:
 
         for index, row in df.iterrows():
             if df_spt_atual is not None:
-                prof, p_neg = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo, tem_atrito_neg, h_aterro) 
+                prof, p_neg = calcular_profundidade_estaca(df_spt_atual, row["Diametro_m"], row["Carga_por_Estaca_kN"], criterio_selecionado, prof_minima_global, row["ne"], verificar_bulbo, tem_atrito_neg, h_aterro, metodo_construtivo, secao) 
             else:
                 prof = prof_minima_global
                 p_neg = 0.0
@@ -755,7 +777,7 @@ if st.session_state.df_projeto is not None:
             atritos_negativos.append(p_neg)
             cargas_totais_estaca.append(row["Carga_por_Estaca_kN"] + p_neg)
             
-            peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual)
+            peso_long, peso_estribo, num_barras, comp_gaiola = calcular_peso_aco_estaca(row["Diametro_m"], prof, taxa_armadura, bitola, bitola_estribo, espacamento_estribo, L_armadura_manual, secao)
             
             pesos_long_estaca.append(peso_long)
             pesos_estribo_estaca.append(peso_estribo)
@@ -777,7 +799,12 @@ if st.session_state.df_projeto is not None:
         total_estacas = df["ne"].sum()
         df["Metros_Perfurados"] = df["Profundidade_m"] * df["ne"]
         total_metros = df["Metros_Perfurados"].sum()
-        df["Vol_Concreto_m3"] = (np.pi * (df["Diametro_m"]**2) / 4) * df["Metros_Perfurados"]
+        
+        if secao == "Circular":
+            df["Vol_Concreto_m3"] = (np.pi * (df["Diametro_m"]**2) / 4) * df["Metros_Perfurados"]
+        else:
+            df["Vol_Concreto_m3"] = (df["Diametro_m"]**2) * df["Metros_Perfurados"]
+            
         volume_concreto_total = df["Vol_Concreto_m3"].sum()
         peso_aco_total = df["Peso_Aco_kg"].sum()
 
@@ -837,7 +864,7 @@ if st.session_state.df_projeto is not None:
 
         with col_btn2:
             try:
-                pdf_estrutural = gerar_memorial_estrutural_pdf(df, df_spt_atual, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo, tem_atrito_neg, h_aterro)
+                pdf_estrutural = gerar_memorial_estrutural_pdf(df, df_spt_atual, config_memoria, fck_concreto, criterio_selecionado, prof_minima_global, verificar_bulbo, tem_atrito_neg, h_aterro, metodo_construtivo, secao)
                 st.download_button(
                     label="📄 Baixar Memorial Estrutural (PDF)",
                     data=pdf_estrutural,
