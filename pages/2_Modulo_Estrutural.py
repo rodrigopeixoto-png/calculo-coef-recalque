@@ -10,6 +10,36 @@ import ezdxf
 import plotly.express as px
 
 # -----------------------------------------------------------------------------
+# DICIONÁRIO GEOTÉCNICO E CONSTANTES
+# -----------------------------------------------------------------------------
+PARAMETROS_SOLO = {
+    "Aterro":                {"aoki_K": 400,  "aoki_alpha": 0.030, "alpha_k": 1000},
+    "Areia":                 {"aoki_K": 1000, "aoki_alpha": 0.014, "alpha_k": 3000},
+    "Areia Siltosa":         {"aoki_K": 800,  "aoki_alpha": 0.020, "alpha_k": 2800},
+    "Areia Silto-argilosa":  {"aoki_K": 700,  "aoki_alpha": 0.024, "alpha_k": 2500},
+    "Areia Argilosa":        {"aoki_K": 600,  "aoki_alpha": 0.030, "alpha_k": 2500},
+    "Areia Argilo-siltosa":  {"aoki_K": 500,  "aoki_alpha": 0.028, "alpha_k": 2500},
+    "Silte":                 {"aoki_K": 400,  "aoki_alpha": 0.030, "alpha_k": 2000},
+    "Silte Arenoso":         {"aoki_K": 550,  "aoki_alpha": 0.022, "alpha_k": 2500},
+    "Silte Areno-argiloso":  {"aoki_K": 450,  "aoki_alpha": 0.028, "alpha_k": 2200},
+    "Silte Argiloso":        {"aoki_K": 230,  "aoki_alpha": 0.034, "alpha_k": 2000},
+    "Silte Argilo-arenoso":  {"aoki_K": 250,  "aoki_alpha": 0.030, "alpha_k": 2000},
+    "Argila":                {"aoki_K": 200,  "aoki_alpha": 0.060, "alpha_k": 1500},
+    "Argila Arenosa":        {"aoki_K": 350,  "aoki_alpha": 0.024, "alpha_k": 2000},
+    "Argila Areno-siltosa":  {"aoki_K": 300,  "aoki_alpha": 0.028, "alpha_k": 1800},
+    "Argila Silto-arenosa":  {"aoki_K": 250,  "aoki_alpha": 0.030, "alpha_k": 1800},
+    "Argila Siltosa":        {"aoki_K": 220,  "aoki_alpha": 0.040, "alpha_k": 1750}
+}
+
+FATORES_CONSTRUTIVOS = {
+    "Franki": {"F1": 2.5, "F2": 5.0},
+    "Metálica": {"F1": 1.8, "F2": 4.0},
+    "Pré-moldada": {"F1": 1.8, "F2": 4.0},
+    "Escavada": {"F1": 3.0, "F2": 6.0},
+    "Raiz/Hélice": {"F1": 2.0, "F2": 4.0}
+}
+
+# -----------------------------------------------------------------------------
 # FUNÇÃO DE LEITURA DO DXF (CORRIGIDA COM AUTO-ESCALA)
 # -----------------------------------------------------------------------------
 def processar_dxf(file_bytes):
@@ -82,8 +112,79 @@ def processar_dxf(file_bytes):
             except: pass
 
 # -----------------------------------------------------------------------------
-# CÁLCULOS ESTRUTURAIS BÁSICOS
+# CÁLCULOS ESTRUTURAIS BÁSICOS E GEOTÉCNICOS LOCAL
 # -----------------------------------------------------------------------------
+def calcular_curva_capacidade(df_spt, B, metodo_construtivo, secao, criterio_q_adm, cota_assentamento):
+    df = df_spt.copy()
+    df = df.dropna(subset=['N_SPT']).copy()
+    if df.empty: return None, 0.0
+        
+    df["N_SPT"] = pd.to_numeric(df["N_SPT"], errors="coerce").fillna(1)
+    df["Tipo de Solo"] = df["Tipo de Solo"].fillna("Argila")
+    
+    mascara_aterro_fraco = (df["Tipo de Solo"] == "Aterro") & (df["N_SPT"] < 2)
+    df.loc[mascara_aterro_fraco, "N_SPT"] = 2
+    df["N_corr"] = df["N_SPT"].apply(lambda x: min(x, 50))
+    
+    df = df[df["Profundidade (m)"] > cota_assentamento].copy()
+    if df.empty: return None, 0.0
+    
+    Area_c = (np.pi * B**2) / 4 if secao == "Circular" else B**2
+    Perimetro = np.pi * B if secao == "Circular" else 4 * B
+    f1, f2 = FATORES_CONSTRUTIVOS[metodo_construtivo]["F1"], FATORES_CONSTRUTIVOS[metodo_construtivo]["F2"]
+
+    def get_dq_c(s):
+        s = str(s).lower()
+        if "areia" in s: return 400
+        if "silte" in s: return 200
+        return 120
+        
+    def get_teix_alpha(s):
+        s = str(s).lower()
+        if "areia" in s: return 250
+        if "silte" in s: return 200
+        return 150
+
+    if "Escavada" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.5, 0.8, 5.0
+    elif "Hélice" in metodo_construtivo or "Raiz" in metodo_construtivo: alfa_dq, beta_dq, beta_t = 0.3, 1.0, 6.0
+    else: alfa_dq, beta_dq, beta_t = 1.0, 1.0, 8.0
+
+    def calc_aoki(row):
+        solo = PARAMETROS_SOLO.get(row["Tipo de Solo"], PARAMETROS_SOLO["Argila"])
+        rl = (solo["aoki_alpha"] * solo["aoki_K"] * row["N_corr"]) / f2
+        rp = (solo["aoki_K"] * row["N_corr"]) / f1 * Area_c
+        return pd.Series([rp, rl * Perimetro * 1.0])
+
+    df[["Rp_aoki", "delta_Rl_aoki"]] = df.apply(calc_aoki, axis=1)
+
+    df["N_dq"] = df["N_corr"].apply(lambda x: max(3, min(x, 50)))
+    df["C_dq"] = df["Tipo de Solo"].apply(get_dq_c)
+    df["delta_Rl_dq"] = beta_dq * 10 * ((df["N_dq"] / 3) + 1) * Perimetro * 1.0
+    df["Rp_dq"] = alfa_dq * df["C_dq"] * df["N_corr"] * Area_c
+    
+    df["alpha_teix"] = df["Tipo de Solo"].apply(get_teix_alpha)
+    df["delta_Rl_t"] = beta_t * df["N_corr"] * Perimetro * 1.0
+    df["Rp_t"] = df["alpha_teix"] * df["N_corr"] * Area_c
+
+    mascara_aterro = df["Tipo de Solo"] == "Aterro"
+    P_neg_adotado = 0.0
+    if mascara_aterro.any():
+        P_neg_aoki, P_neg_dq, P_neg_t = df.loc[mascara_aterro, "delta_Rl_aoki"].sum(), df.loc[mascara_aterro, "delta_Rl_dq"].sum(), df.loc[mascara_aterro, "delta_Rl_t"].sum()
+        df.loc[mascara_aterro, ["delta_Rl_aoki", "delta_Rl_dq", "delta_Rl_t"]] = 0.0
+        P_neg_adotado = (P_neg_aoki + P_neg_dq + P_neg_t) / 3.0 if criterio_q_adm == "Média dos Métodos" else max(P_neg_aoki, P_neg_dq, P_neg_t)
+
+    df["Rc_Aoki"] = (df["Rp_aoki"] + df["delta_Rl_aoki"].cumsum()) / 2.0
+    df["Rc_DQ"] = (df["Rp_dq"] + df["delta_Rl_dq"].cumsum()) / 2.0
+    df["Rc_Teix"] = (df["Rp_t"] + df["delta_Rl_t"].cumsum()) / 2.0
+
+    if criterio_q_adm == "Média dos Métodos": df["Rc_Adotada"] = (df["Rc_Aoki"] + df["Rc_DQ"] + df["Rc_Teix"]) / 3.0
+    elif criterio_q_adm == "Menor Valor (Mais Conservador)": df["Rc_Adotada"] = df[["Rc_Aoki", "Rc_DQ", "Rc_Teix"]].min(axis=1)
+    elif criterio_q_adm == "Apenas Aoki-Velloso": df["Rc_Adotada"] = df["Rc_Aoki"]
+    elif criterio_q_adm == "Apenas Décourt-Quaresma": df["Rc_Adotada"] = df["Rc_DQ"]
+    elif criterio_q_adm == "Apenas Teixeira": df["Rc_Adotada"] = df["Rc_Teix"]
+
+    return df, P_neg_adotado
+
 def obter_capacidade_profundidade(df_curva, carga_total):
     if df_curva is None or df_curva.empty:
         return "Erro"
@@ -147,6 +248,12 @@ else:
 ativar_bulbo = st.sidebar.checkbox("👁️ Ativar Verificação do Bulbo de Tensões", value=True)
 considerar_aterro = st.sidebar.checkbox("🚜 Considerar Atrito Negativo (Aterro)?", value=False)
 
+# Adicionado as geometrias necessárias para o cálculo não dar erro (caso não venham do Módulo 1)
+metodo_construtivo = st.sidebar.selectbox("Método Construtivo:", list(FATORES_CONSTRUTIVOS.keys()), index=4)
+secao = st.sidebar.selectbox("Secção", ["Circular", "Quadrada"])
+B = st.sidebar.number_input("Largura/Diâmetro B (m)", min_value=0.1, value=0.30, step=0.05)
+cota_assentamento = st.sidebar.number_input("Cota de Arrasamento (m)", min_value=0.0, value=0.0, step=0.5)
+
 fck = st.sidebar.selectbox("Classe do Concreto (Fck - MPa)", [15, 20, 25, 30, 35, 40], index=[15, 20, 25, 30, 35, 40].index(int(fck_val)) if int(fck_val) in [15, 20, 25, 30, 35, 40] else 2)
 prof_minima = st.sidebar.number_input("Profundidade Mínima da Estaca (m)", min_value=1.0, value=6.0, step=0.5)
 taxa_armadura = st.sidebar.number_input("Taxa de Armadura Longitudinal (%)", min_value=0.1, value=taxa_val, step=0.1)
@@ -167,13 +274,11 @@ if upload_dxf is not None and furo_base_selecionado is not None:
         elif erro_dxf != "":
             st.error(erro_dxf)
         else:
-            # Integração com a sua função original de capacidade do Módulo 1
-            from pages.Modulo_Geotecnico import processar_calculos_estaca
-            
+            # Substituímos a importação do Módulo 1 pelo nosso motor local sem erros!
             df_furo_base = projeto_furos[furo_base_selecionado]
-            res_calc = processar_calculos_estaca(df_furo_base, None, criterio_q_adm)
-            df_curva = res_calc['df_inf']
-            P_neg = res_calc['P_neg'] if considerar_aterro else 0.0
+            df_curva, P_neg_calc = calcular_curva_capacidade(df_furo_base, B, metodo_construtivo, secao, criterio_q_adm, cota_assentamento)
+            
+            P_neg = P_neg_calc if considerar_aterro else 0.0
             
             resultados = []
             for _, pilar in df_cargas.iterrows():
